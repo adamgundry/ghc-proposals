@@ -382,16 +382,16 @@ the following user-defined ``HasField`` instances are prohibited (in
 addition to the usual rules, such as the prohibition on type
 families):
 
- * ``HasField _ r _`` where ``r`` is a variable;
+* ``HasField _ r _`` where ``r`` is a variable;
 
- * ``HasField _ (T ...) _`` if ``T`` is a data family (because it
-   might have fields introduced later, using data instance declarations);
+* ``HasField _ (T ...) _`` if ``T`` is a data family (because it
+  might have fields introduced later, using data instance declarations);
 
- * ``HasField x (T ...) _`` if ``x`` is a variable and ``T`` has any
-   fields at all (but this instance is permitted if ``T`` has no fields);
+* ``HasField x (T ...) _`` if ``x`` is a variable and ``T`` has any
+  fields at all (but this instance is permitted if ``T`` has no fields);
 
- * ``HasField "foo" (T ...) _`` if ``T`` has a field ``foo`` (but this
-   instance is permitted if it does not).
+* ``HasField "foo" (T ...) _`` if ``T`` has a field ``foo`` (but this
+  instance is permitted if it does not).
 
 If a field has a higher-rank or existential type, the corresponding ``HasField``
 constraint will not be solved automatically (as described above), but in the
@@ -514,11 +514,11 @@ It is possible to define a ``HasField``-like class in user code,
 without requiring built-in constraint solving behaviour.  Two
 approaches have been demonstrated:
 
- * using generic programming (`generic-records
-   <https://hackage.haskell.org/package/generic-records>`_);
+* using generic programming (`generic-records
+  <https://hackage.haskell.org/package/generic-records>`_);
 
- * using Template Haskell (`overloaded-records
-   <http://hackage.haskell.org/package/overloaded-records>`_).
+* using Template Haskell (`overloaded-records
+  <http://hackage.haskell.org/package/overloaded-records>`_).
 
 It could be argued that the ability to do this in user code means it
 is not necessary to make it part of the compiler.
