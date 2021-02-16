@@ -174,44 +174,6 @@ will now review the various specific design choices that arise with
 ``HasField``, and propose a resolution in each case.
 
 
-Type-changing update
-~~~~~~~~~~~~~~~~~~~~
-A traditional ``Haskell2010`` record update such as ``t { foo = e }`` is able to
-change the type of the field being updated, and hence the type of the record as
-a whole.  For example::
-
-  data T a = MkT { foo :: a }
-
-  typeChangingUpdate :: T () -> T Bool
-  typeChangingUpdate t = t { foo = True }
-
-`Proposal #158 <https://github.com/ghc-proposals/ghc-proposals/pull/158>`_ does
-not permit such type-changing updates, because defines a setter operation
-``setField :: HasField x r a => r -> a -> r`` where the input and output record
-types must both be ``r``.  This has the significant merit of simplicity, because
-type inference has more information to work with, and there is no need to
-specify under which circumstances type-changing updates are allowed.
-
-However, type-changing updates are desirable for optics libraries, as the
-restriction to non-type-changing update would mean they are unable to switch to
-using ``HasField`` without loss of functionality.  Such a switch is desirable
-for optics libraries because at the moment users must either (a) define lenses
-for fields manually, (b) use Template Haskell which causes difficulties for
-cross-compilation and compile-time performance issues, or (c) use generic
-programming which imposes compile-time and runtime performance limitations.
-
-In the light of this, we propose adding support for type-changing update to the
-``GHC.Records`` API.  In particular, ``GHC.Records`` will expose both a function
-``setFieldPoly`` that permits type-changing update and a function ``setField``
-that specialises it to the case when type-changing update is not available.
-
-In accordance with `proposal #282
-<https://github.com/ghc-proposals/ghc-proposals/pull/282>`_, the
-``RecordDotSyntax`` extension will continue to use ``setField`` and hence
-**not** permit type-changing updates, i.e. turning on ``RecordDotSyntax`` would
-cause the definition of ``typeChangingUpdate`` above to be rejected.
-
-
 Single class vs. multiple classes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 The dormant `proposal #286
@@ -315,6 +277,11 @@ defined by specific optics libraries.  (The ``optics`` library defines a class
 ``LabelOptic`` that plays essentially this role.)
 
 
+Order of arguments to setField
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+TODO: propose ``field -> record -> record`` order as it composes better.
+
+
 Functional dependencies
 ~~~~~~~~~~~~~~~~~~~~~~~
 The existing ``HasField`` class expresses the relationship between the record
@@ -386,7 +353,7 @@ definitions, for the following reasons:
   In contrast, there seems to be little hope that such a definition could be
   supported using a ``FieldType`` type family.
 
-* Supporting `Unboxed fields`_ with the type family approach would introduce
+* Supporting `Unlifted fields`_ with the type family approach would introduce
   extra complexity (we would need another type family to determine the
   ``RuntimeRep`` of the field).  It is relatively straightforward with
   functional dependencies.
@@ -411,7 +378,7 @@ type family that will determine the type of a field in a record::
 If ``R ...`` is a record type with a field ``foo`` of type ``T`` in scope, GHC
 will automatically reduce an occurrence of ``FieldType "foo" (R ...)`` to ``T``.
 The type family will not reduce if the field is not in scope, or its type is
-higher-rank, existentially quantified or unboxed.
+higher-rank, existentially quantified or unlifted.
 
 As with ``HasField`` at present, it will be permitted for users to define their
 own instances of ``FieldType`` to support "virtual record fields", provided they
@@ -428,10 +395,131 @@ record types are assumed to have a ``Generic`` instance.  However, this does not
 allow for the scope of fields to be controlled, and is likely to be less
 efficient than providing built-in support for ``FieldType``.
 
+Strictly speaking the restriction to boxed types is probably unnecessary,
+because we could define::
 
-Treatment of partial fields
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  type family FieldRep  (x :: Symbol) (r :: Type) :: RuntimeRep
+  type family FieldType (x :: Symbol) (r :: Type) :: TYPE (FieldRep x r)
 
+This seems unreasonably complex, however.
+
+
+Type-changing update
+~~~~~~~~~~~~~~~~~~~~
+A traditional ``Haskell2010`` record update such as ``t { foo = e }`` is able to
+change the type of the field being updated, and hence the type of the record as
+a whole.  For example::
+
+  data T a = MkT { foo :: a }
+
+  typeChangingUpdate :: T () -> T Bool
+  typeChangingUpdate t = t { foo = True }
+
+`Proposal #158 <https://github.com/ghc-proposals/ghc-proposals/pull/158>`_ does
+not permit such type-changing updates, because defines a setter operation
+``setField :: HasField x r a => r -> a -> r`` where the input and output record
+types must both be ``r``.  This has the significant merit of simplicity, because
+type inference has more information to work with, and there is no need to
+specify under which circumstances type-changing updates are allowed.
+
+However, type-changing updates are desirable for optics libraries, as the
+restriction to non-type-changing update would mean they are unable to switch to
+using ``HasField`` without loss of functionality.  Such a switch is desirable
+for optics libraries because at the moment users must either (a) define lenses
+for fields manually, (b) use Template Haskell which causes difficulties for
+cross-compilation and compile-time performance issues, or (c) use generic
+programming which imposes compile-time and runtime performance limitations.
+
+In the light of this, we propose adding support for type-changing update to the
+``GHC.Records`` API.  In particular, ``GHC.Records`` will expose both a function
+``setFieldPoly`` that permits type-changing update and a function ``setField``
+that specialises it to the case when type-changing update is not available::
+
+  class SetFieldPoly x s t a b | x s -> a l, x t -> b l, x s b -> t, x t a -> s where
+    setFieldPoly :: s -> b -> t
+
+  type SetField x r a = SetFieldPoly x r r a a
+
+  setField :: forall x r a . SetField x r a => r -> a -> r
+  setField = setFieldPoly @x
+
+In accordance with `proposal #282
+<https://github.com/ghc-proposals/ghc-proposals/pull/282>`_, the
+``RecordDotSyntax`` extension will continue to use ``setField`` and hence
+**not** permit type-changing updates, i.e. turning on ``RecordDotSyntax`` would
+cause the definition of ``typeChangingUpdate`` above to be rejected.
+
+
+Modifiable parameters
+^^^^^^^^^^^^^^^^^^^^^
+TODO: explain: a parameter cannot be modified if it occurs in a different field.
+
+
+Phantom parameters
+^^^^^^^^^^^^^^^^^^
+A phantom parameter is a type parameter of a datatype declaration that does not
+occur in the type of any of its fields, for example ``s`` is phantom in::
+
+  data Tagged s b = Tagged { unTagged :: b }
+
+A traditional Haskell record update allows phantom parameters to be changed, so
+for example the following is accepted::
+
+  \x -> x { unTagged = unTagged x } :: Tagged s1 b -> Tagged s2 b
+
+(Empty record updates are disallowed, so ``\x -> x {}`` cannot be used to change
+phantom parameters without updating at least one field.)
+
+Thus the question arises as to whether a type-changing update via
+``setFieldPoly`` should be able to change a phantom parameter, i.e.  whether a
+constraint such as ``SetFieldPoly "unTagged" (Tagged s1 a) (Tagged s2 b) a b``
+should be solvable.
+
+It is technically possible to solve such constraints, at least in current GHC
+versions.  However, doing so violates the functional dependencies ``x s b -> t``
+and ``x t a -> s`` in the definition of ``SetFieldPoly``.  This leads to a
+failure to infer principal types.  For example, the following definition is
+inferred to have the first type, but the second type is more general (and is
+accepted with a type signature)::
+
+  -- notPrincipal :: SetFieldPoly "foo" s t a b => s -> b -> (t, t)
+  -- notPrincipal :: (SetFieldPoly "foo" s t a b, SetFieldPoly "foo" s t' a b) => s -> b -> (t, t')
+  notPrincipal r v = (setFieldPoly @"foo" r v, setFieldPoly @"foo" r v)
+
+Moreover, in some use cases for phantom parameters, it is intended that only
+trusted code modifies the parameter.  This is typically enforced at module
+boundaries by hiding the data constructor, but as the example above
+demonstrates, it is also necessary to hide any fields.  This seems undesirable,
+as it may not be obvious to users that merely exporting a field allows any
+phantom parameters to be changed arbitrarily.
+
+Thus we propose that the constraint solver should not allow ``SetFieldPoly``
+constraints to change phantom parameters.  In cases where this is necessary, the
+user can write a function that pattern matches on the data constructor (provided
+it is in scope!).
+
+
+Type parameters occurring under type families
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TODO: explain: violation of functional dependency.
+
+  type family F (x :: Type) :: Type
+  type instance F Int  = Int
+  type instance F Bool = Bool
+  type instance F Char = Bool
+
+  data UnderFamily c = MkUnderFamily { foo :: F c }
+
+
+
+Higher-rank fields
+~~~~~~~~~~~~~~~~~~
+TODO: explain: in principle ``GetField`` is possible in some cases, but ``SetField`` is not.
+Propose not to attempt them.
+
+
+Partial fields
+~~~~~~~~~~~~~~
 In ``Haskell2010`` it is permitted to define *partial fields*, i.e. fields that
 do not belong to every constructor of the datatype.  This means that traditional
 record selection and update may throw runtime exceptions, as in these examples::
@@ -520,11 +608,10 @@ to be ``Symbol``, the instance will be selected and ``HasField`` from
 kinds.
 
 
-Unboxed fields
-~~~~~~~~~~~~~~
-
-The existing definition of ``HasField`` does not support unboxed fields, such as
-in the following example::
+Unlifted fields
+~~~~~~~~~~~~~~~
+The existing definition of ``HasField`` does not support unlifted fields, such
+as in the following example::
 
   data T = MkT { foo :: Int# }
 
@@ -532,7 +619,7 @@ The constraint ``HasField "foo" T Int#`` is not even well-kinded, because the
 field type is required to be a (lifted) type.
 
 At the time ``HasField`` was introduced, it was not possible to define type
-classes over potentially unboxed types.  However, thanks to levity polymorphism
+classes over potentially unlifted types.  However, thanks to levity polymorphism
 in more recent GHC versions, this is now relatively straightforward.  In
 particular, we can define::
 
@@ -637,41 +724,51 @@ follows::
 
   module GHC.Records where
 
-  import GHC.Types (Type, TYPE, Constraint, Symbol)
+  import GHC.Types (Constraint, Symbol, Type, TYPE)
 
   -- | Constraint representing the fact that a field @x@ of type @a@ can be
-  -- selected from the record type @r@.  This will be solved automatically for
-  -- built-in records where the field is in scope, but manual instances may be
-  -- provided as well.
+  -- selected from the record type @r@.
+  --
+  -- This will be solved automatically for built-in records where the field is
+  -- in scope, but manual instances may be provided as well.
+  --
   type GetField :: forall {l} . Symbol -> Type -> TYPE l -> Constraint
   class GetField x r (a :: TYPE l) | x r -> a l where
     -- | Selector function to extract the field from the record.
     getField :: r -> a
 
-  -- | Constraint representing the fact that a field @x@ of type @a@ can be set
-  -- on the record type @s@, producing a record of type @t@.  This will be
-  -- solved automatically for built-in records where the field is in scope, but
-  -- manual instances may be provided as well.
-  type SetFieldPoly :: forall {l} . Symbol -> Type -> Type -> TYPE l -> Constraint
-  class SetFieldPoly x s t (b :: TYPE l) | x t -> b l, x s b -> t where
+  -- | Constraint representing the fact that a field @x@ of type @a@ can be
+  -- updated in the record type @s@, producing a record of type @t@.
+  --
+  -- This will be solved automatically for built-in records where the field is
+  -- in scope, but manual instances may be provided as well.
+  --
+  type SetFieldPoly :: forall {l} . Symbol -> Type -> Type -> TYPE l -> TYPE l -> Constraint
+  class SetFieldPoly x s t a (b :: TYPE l) | x s -> a l, x t -> b l, x s b -> t, x t a -> s where
     -- | Update function to set the field @x@ in the record @s@.  Permits
     -- type-changing update.
     setFieldPoly :: s -> b -> t
 
-  -- | Constraint representing the fact that a field @x@ of type @a@ can be set
-  -- on the record type @r@.
+  -- | Constraint representing the fact that a field @x@ of type @a@ can be
+  -- selected from the record type @r@.
   type SetField :: forall {l} . Symbol -> Type -> TYPE l -> Constraint
-  type SetField x r a = SetFieldPoly x r r a
+  type SetField x r a = SetFieldPoly x r r a a
 
   -- | Update function to set the field @x@ in the record @r@.  Does not permit
   -- type-changing update.
   setField :: forall {l} x r (a :: TYPE l)  . SetField x r a => r -> a -> r
   setField = setFieldPoly @x
 
-  -- | Constraint representing the fact that a field @x@ of type @a@ can be get
-  -- or set on the record @r@.
+  -- | Constraint representing the fact that a field @x@ of type @a@ can be
+  --  selected from or updated in the record @r@.
   type HasField :: forall {l} . Symbol -> Type -> TYPE l -> Constraint
   type HasField x r a = (GetField x r a, SetField x r a)
+
+  -- | Constraint representing the fact that a field @x@ of type @a@ can be
+  -- selected from the record @s@, or updated with a value of type @b@ to
+  -- produce a record of type @t@.
+  type HasFieldPoly :: forall {l} . Symbol -> Type -> Type -> TYPE l -> TYPE l -> Constraint
+  type HasFieldPoly x s t a b = (GetField x s a, SetFieldPoly x s t a b)
 
   -- | If there is a field @x@ in the record type @r@, returns the type of the
   -- field.  The field must have a simple type of kind 'Type' (i.e. it may not
@@ -689,7 +786,7 @@ To summarise the changes:
   that permits type-changing update.
 
 * The classes are polymorphic in the runtime representation of the field type,
-  allowing support for `Unboxed fields`_. Standalone kind signatures and
+  allowing support for `Unlifted fields`_. Standalone kind signatures and
   explicit specificity annotations are used to make this polymorphism explicit.
 
 * The classes are no longer polymorphic in the kind of field labels. This is now
@@ -738,7 +835,7 @@ Note that:
 
 * Solving the equation between the wanted and actual field types will fill in
   the inferred parameter ``l :: RuntimeRep`` with the appropriate
-  representation.  This means support for unboxed fields is automatic.
+  representation.  This means support for unlifted fields is automatic.
 
 
 Solving ``SetFieldPoly`` constraints
@@ -751,7 +848,7 @@ the rules for ``GetField``.  That is, a constraint ``SetFieldPoly f r r a`` will
 be solved automatically iff ``GetField f r a`` is solved automatically.
 (TODO: verify this claim.)
 
-A wanted constraint ``SetFieldPoly f s t b`` will be solved automatically by
+A wanted constraint ``SetFieldPoly f s t a b`` will be solved automatically by
 GHC's constraint solver when the following hold:
 
 * ``f`` is a type-level symbol ``"foo"``.
@@ -785,6 +882,8 @@ emit new constraints as follows.
 * ``s ~ R s_0 ... s_n`` where ``s_i = alpha_i`` for a fresh unification variable
   ``alpha_i`` if ``x_i`` is modifiable, or ``s_i = t_i`` otherwise;
 
+* ``a ~ u[s_0/x_0, ..., s_n/x_n]``;
+
 * ``b ~ u[t_0/x_0, ..., t_n/x_n]``;
 
 * TODO: something about GADTs;
@@ -802,22 +901,6 @@ Reducing the ``FieldType`` type family
 
 TODO: specify
 
-
-
-Examples
---------
-This section illustrates the specification through the use of examples of the
-language change proposed. It is best to exemplify each point made in the
-specification, though perhaps one example can cover several points. Contrived
-examples are OK here. If the Motivation section describes something that is
-hard to do without this proposal, this is a good place to show how easy that
-thing is to do with the proposal.
-
-TODO: examples of solving!
-
-
-Effect and Interactions
------------------------
 
 Flags for compile-time performance control
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -870,8 +953,24 @@ consider the need for the flag; thus we do not require a pragma in the source
 file containing the datatype definition.
 
 
+
+Examples
+--------
+This section illustrates the specification through the use of examples of the
+language change proposed. It is best to exemplify each point made in the
+specification, though perhaps one example can cover several points. Contrived
+examples are OK here. If the Motivation section describes something that is
+hard to do without this proposal, this is a good place to show how easy that
+thing is to do with the proposal.
+
+TODO: examples of solving!
+
+
+Effect and Interactions
+-----------------------
+
 ``NoFieldSelectors`` and ``-fno-generate-record-selectors``
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 The accepted `proposal #160
 <https://github.com/ghc-proposals/ghc-proposals/pull/160>`_ defined a new
 language extension ``NoFieldSelectors``, which prevents field selector functions
@@ -988,6 +1087,8 @@ individual design choice, but there are many minor variations possible.
   families in place of functional dependencies.  It gives a rather larger
   definition for the ``SetField`` class, including ``GetField`` as a
   superclass.
+
+* TODO: cite https://github.com/effectfully-ou/sketches/tree/master/has-lens-done-right
 
 Another possible approach is to abandon ``HasField`` as a solution to the
 "Records Problem" in Haskell.
