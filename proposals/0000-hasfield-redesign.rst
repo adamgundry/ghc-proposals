@@ -279,7 +279,21 @@ defined by specific optics libraries.  (The ``optics`` library defines a class
 
 Order of arguments to setField
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-TODO: propose ``field -> record -> record`` order as it composes better.
+`Proposal #158 <https://github.com/ghc-proposals/ghc-proposals/pull/158>`_
+specifies that the type of ``setField`` is ``HasField x r a => r -> a -> r``.
+However, swapping the order of arguments so that the new field value is first
+means that composing of multiple updates for a single record becomes simpler::
+
+  setField :: HasField x r a => a -> r -> r
+
+  example :: (HasField "age" r Int, HasField "colour" r String) => r -> r
+  example = setField @"age" 42 . setField @"colour" "Blue"
+
+While we do not typically expect users to call ``setField`` directly, in cases
+where they prefer to do so, this seems like a good reason to prefer this
+argument order.  Moreover, this order is consistent with the ``set`` function in
+the ``lens`` and ``optics`` libraries.  It is not clear what the rationale was
+for the alternative order in the previous proposal.
 
 
 Functional dependencies
@@ -322,45 +336,25 @@ However, we propose to retain the use of functional dependencies in the class
 definitions, for the following reasons:
 
 * The functional dependency approach generally leads to simpler inferred types
-  and clearer type errors, because unsolved constraints look like ``HasField x
-  r a`` which has a natural reading "``r`` has a field ``x`` of type ``a``".
-  In contrast, the type family approach ends up separately reporting errors
-  involving ``HasField x r`` (meaning ``r`` has a field ``x`` of unspecified
-  type) and equalities including ``FieldType``.
-
-* In general, the field type may not necessarily be a function of the record
-  type.  For example (using ``RankNTypes``)::
-
-    data T = MkT { foo :: forall a . a -> a }
-
-  Here it would in principle make sense to say that ``T`` has a field ``foo`` of
-  type ``a -> a`` for any type ``a``, and hence ``HasField "foo" T (a -> a)``
-  should be solvable.  (In contrast, the alternative formulation ``HasField
-  "foo" T (forall a . a -> a)`` requires an impredicative constraint that cannot
-  feasibly be supported, even with the recent introduction of Quick Look
-  Impredicativity (`proposal #274
-  <https://github.com/ghc-proposals/ghc-proposals/pull/274>`_).
-
-  While this is technically not intentionally supported by functional
-  dependencies as they stand, `proposal #374
-  <https://github.com/ghc-proposals/ghc-proposals/pull/374>`_ suggests
-  optionally allowing such "dysfunctional" dependencies; alternatively it may be
-  possible to generalise functional dependencies to a more liberal notion of
-  "inference hints" that would permit this (see `#391
-  <https://github.com/ghc-proposals/ghc-proposals/issues/391>`_ and the `GHC
-  wiki pages on functional dependencies
-  <https://gitlab.haskell.org/ghc/ghc/-/wikis/Functional-dependencies-in-GHC>`_).
-  In contrast, there seems to be little hope that such a definition could be
-  supported using a ``FieldType`` type family.
+  because unsolved constraints look like ``HasField x r a`` which has a natural
+  reading "``r`` has a field ``x`` of type ``a``".  In contrast, the type family
+  approach ends up with unsolved ``HasField x r`` constraints (meaning ``r`` has
+  a field ``x`` of unspecified type) and equalities including ``FieldType``.
+  (See `previous discussion on proposal #158
+  <https://github.com/ghc-proposals/ghc-proposals/pull/158#issuecomment-449419429>`_.)
 
 * Supporting `Unlifted fields`_ with the type family approach would introduce
-  extra complexity (we would need another type family to determine the
-  ``RuntimeRep`` of the field).  It is relatively straightforward with
-  functional dependencies.
+  extra complexity, because we would need another type family to determine the
+  ``RuntimeRep`` of the field, and it would be difficult to hide this type
+  family from users.  In contrast, supporting them is relatively straightforward
+  with functional dependencies, and GHC will automatically hide unused levity
+  polymorphism.
 
 * For `type-changing update`_, it is desirable that either the original or
-  updated types may be used to infer the other.  This is difficult to achieve
-  with type families.
+  updated types may be used to infer the other.  This can be achieved with type
+  families (e.g. see `the SameModulo approach by @effectfully
+  <https://github.com/effectfully-ou/sketches/tree/master/has-lens-done-right#the-samemodulo-approach-full-code>`_)
+  but requires additional complexity.
 
 Functional dependencies do not carry evidence.  This means that from the given
 constraints ``(HasField x r a, HasField x r b)`` it would not be possible to
@@ -436,11 +430,11 @@ In the light of this, we propose adding support for type-changing update to the
 that specialises it to the case when type-changing update is not available::
 
   class SetFieldPoly x s t a b | x s -> a l, x t -> b l, x s b -> t, x t a -> s where
-    setFieldPoly :: s -> b -> t
+    setFieldPoly :: b -> s -> t
 
   type SetField x r a = SetFieldPoly x r r a a
 
-  setField :: forall x r a . SetField x r a => r -> a -> r
+  setField :: forall x r a . SetField x r a => a -> r -> r
   setField = setFieldPoly @x
 
 In accordance with `proposal #282
@@ -450,9 +444,37 @@ In accordance with `proposal #282
 cause the definition of ``typeChangingUpdate`` above to be rejected.
 
 
-Modifiable parameters
-^^^^^^^^^^^^^^^^^^^^^
-TODO: explain: a parameter cannot be modified if it occurs in a different field.
+Modifiable parameters and multiple updates
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+A traditional ``Haskell2010`` record update may change multiple fields
+simultaneously, which may be important when types change.  For example::
+
+  data Pair a = MkPair { first :: a, second :: a }
+
+  multipleUpdate :: Pair Int -> Pair String
+  multipleUpdate x = x { first = show (first x + second x), second = "" }
+
+Here it is crucial that both fields are changed simultaneously, because ``Pair``
+requires both its components to have the same types.
+
+In contrast, a call to ``setFieldPoly`` may change the value of only a single
+field.  Consequently, if a datatype parameter occurs in the types of multiple
+fields, it may not be changed via type-changing update.  We do not currently
+have a good way to support such updates without introducing significant
+complexity.
+
+This is not a drastic limitation because it is usually possible to generalise
+the record type involved so that each field has an independent type, for example
+by defining::
+
+  type Pair a = Pair' a a
+  data Pair' a b = MkPair { first :: a, second :: b }
+
+Now the following alternate definition is accepted, including a subexpression
+whose type is ``Pair' String Int``::
+
+  multipleUpdate :: Pair Int -> Pair String
+  multipleUpdate x = (x { first = show (first x + second x) }) { second = "" }
 
 
 Phantom parameters
@@ -482,9 +504,13 @@ failure to infer principal types.  For example, the following definition is
 inferred to have the first type, but the second type is more general (and is
 accepted with a type signature)::
 
-  -- notPrincipal :: SetFieldPoly "foo" s t a b => s -> b -> (t, t)
-  -- notPrincipal :: (SetFieldPoly "foo" s t a b, SetFieldPoly "foo" s t' a b) => s -> b -> (t, t')
-  notPrincipal r v = (setFieldPoly @"foo" r v, setFieldPoly @"foo" r v)
+  -- notPrincipal :: SetFieldPoly "foo" s t a b => b -> s -> (t, t)
+  -- notPrincipal :: (SetFieldPoly "foo" s t a b, SetFieldPoly "foo" s t' a b) => b -> s -> (t, t')
+  notPrincipal v r = (setFieldPoly @"foo" v r, setFieldPoly @"foo" v r)
+
+(If we consider only solutions to ``SetFieldPoly`` that respect the functional
+dependencies, these types are equivalent, but if we permit violations of the
+functional dependencies then they become distinguishable.)
 
 Moreover, in some use cases for phantom parameters, it is intended that only
 trusted code modifies the parameter.  This is typically enforced at module
@@ -501,21 +527,82 @@ it is in scope!).
 
 Type parameters occurring under type families
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-TODO: explain: violation of functional dependency.
+Consider the following definitions::
+
+  data UnderFamily c = MkUnderFamily { foo :: F c }
 
   type family F (x :: Type) :: Type
   type instance F Int  = Int
   type instance F Bool = Bool
   type instance F Char = Bool
 
-  data UnderFamily c = MkUnderFamily { foo :: F c }
+  underFamilyRecord :: UnderFamily Int
+  underFamilyRecord = MkUnderFamily { foo = 0 }
 
+In an update such as ``underFamilyRecord { foo = True }`` the resulting record
+could have type ``UnderFamily Bool`` or ``UnderFamily Char`` because both would
+be type-correct.  However, this means that the field name, initial record type
+and assigned field type do not determine the resulting record type, i.e. the
+functional dependency ``x s b -> t`` in the definition of ``SetFieldPoly`` would
+be violated if the constraints
+``SetFieldPoly (UnderFamily Int) (UnderFamily Bool) Int Bool`` and
+``SetFieldPoly (UnderFamily Int) (UnderFamily Char) Int Bool`` were both
+solvable.  As with the case of phantom parameters discussed above, this means
+inferred types are not necessarily principal.
+
+Thus we propose that the constraint solver should not allow ``SetFieldPoly``
+constraints to change type parameters where the type variable appears only
+"flexibly", i.e. under a type family application in the field type.
+
+If a parameter occurs both "rigidly" and "flexibly", it is safe to allow
+type-changing updates in involving that parameter.  For example::
+
+  data Rigid c = MkRigid { bar :: (c, F c) }
+
+  rigid :: Rigid Int
+  rigid = (0, 0)
+
+  ok = rigid { bar = (True, False) }
+
+Here the only possible type of ``ok`` is ``Rigid Bool``, because it is
+determined by the first component of the pair; the presence of the type family
+doesn't make a difference.
 
 
 Higher-rank fields
 ~~~~~~~~~~~~~~~~~~
-TODO: explain: in principle ``GetField`` is possible in some cases, but ``SetField`` is not.
-Propose not to attempt them.
+Consider the following::
+
+  data Rank2 = Rank2 { identity :: forall a . a -> a }
+
+  data Rank3 = Rank3 { withIdentity :: (forall a . a -> a) -> Bool }
+
+In the first definition, the field has a rank-1 type, but this means the
+selector function has a rank-2 type.  Similarly, in the second definition, a
+rank-2 field type leads to a rank-3 selector function type.
+
+Should it be possible to solve ``GetField`` or ``SetFieldPoly`` constraints
+involving such fields?  Unfortunately it is not feasible to solve for
+"impredicative" constraints such as
+``GetField "identity" Rank2 (forall a . a -> a)``,
+even with the recent introduction of Quick Look Impredicativity (following
+`proposal #274 <https://github.com/ghc-proposals/ghc-proposals/pull/274>`_).
+Bidirectional type inference, on which both ``RankNTypes`` and
+``ImpredicativeTypes`` (now) rely, requires that instantiations of
+``forall``-bound variables be determined while traversing the term, prior to the
+constraint solver being invoked.
+
+On the other hand, it would be possible in principle to solve constraints such
+as ``GetField "identity" Rank2 (a -> a)`` for arbitrary ``a``, making it appear
+as if the field has an infinite family of types.  However, this does not extend
+to ``SetField``, because there we really need the value being set to be
+polymorphic.  Moreover, it violates the functional dependency ``x r -> a``
+on the ``GetField`` class, which is undesirable as discussed in previous
+sections.
+
+Accordingly, we propose that ``GetField`` or ``SetFieldPoly`` constraints
+involving fields with higher-rank types should not be solved automatically.
+(This is the existing behaviour for ``HasField`` in current GHC versions.)
 
 
 Partial fields
@@ -540,8 +627,8 @@ We could consider supporting this using built-in classes like the following::
   class HasPartialField x r a | x r -> a where
     getPartialField :: r -> Maybe a
 
-  class SetPartialField x s t b | x t -> b, x s b -> t where
-    setPartialField :: s -> b -> t
+  class SetPartialField x s t a b | x s -> a, x t -> b, x s b -> t, x t a -> s where
+    setPartialField :: b -> s -> t
 
   type family FieldTotal x (r :: Type) :: Bool
 
@@ -671,38 +758,6 @@ preferable, we propose to permit changing the types of ``getField``,
 when this is supported by GHC.
 
 
-Multiple updates
-~~~~~~~~~~~~~~~~
-A traditional ``Haskell2010`` record update may change multiple fields
-simultaneously, which may be important when types change.  For example::
-
-  data Pair a = MkPair { first :: a, second :: a }
-
-  multipleUpdate :: Pair Int -> Pair String
-  multipleUpdate x = x { first = show (first x + second x), second = "" }
-
-Here it is crucial that both fields are changed simultaneously, because ``Pair``
-requires both its components to have the same types.
-
-We do not currently have a good way to support such updates without introducing
-significant complexity.  Thus if ``HasField`` is used, updates always apply one
-at a time, and the definition of ``multipleUpdate`` will be rejected under
-``RecordDotSyntax``.
-
-This is not a drastic limitation because it is usually possible to generalise
-the record type involved so that each field has an independent type, for example
-by defining::
-
-  type Pair a = Pair' a a
-  data Pair' a b = MkPair { first :: a, second :: b }
-
-Now the following alternate definition is accepted, including a subexpression
-whose type is ``Pair' String Int``::
-
-  multipleUpdate :: Pair Int -> Pair String
-  multipleUpdate x = (x { first = show (first x + second x) }) { second = "" }
-
-
 
 Proposed Change Specification
 -----------------------------
@@ -747,7 +802,7 @@ follows::
   class SetFieldPoly x s t a (b :: TYPE l) | x s -> a l, x t -> b l, x s b -> t, x t a -> s where
     -- | Update function to set the field @x@ in the record @s@.  Permits
     -- type-changing update.
-    setFieldPoly :: s -> b -> t
+    setFieldPoly :: b -> s -> t
 
   -- | Constraint representing the fact that a field @x@ of type @a@ can be
   -- selected from the record type @r@.
@@ -756,7 +811,7 @@ follows::
 
   -- | Update function to set the field @x@ in the record @r@.  Does not permit
   -- type-changing update.
-  setField :: forall {l} x r (a :: TYPE l)  . SetField x r a => r -> a -> r
+  setField :: forall {l} x r (a :: TYPE l)  . SetField x r a => a -> r -> r
   setField = setFieldPoly @x
 
   -- | Constraint representing the fact that a field @x@ of type @a@ can be
@@ -768,7 +823,7 @@ follows::
   -- selected from the record @s@, or updated with a value of type @b@ to
   -- produce a record of type @t@.
   type HasFieldPoly :: forall {l} . Symbol -> Type -> Type -> TYPE l -> TYPE l -> Constraint
-  type HasFieldPoly x s t a b = (GetField x s a, SetFieldPoly x s t a b)
+  type HasFieldPoly x s t a b = (GetField x s a, GetField x t b, SetFieldPoly x s t a b)
 
   -- | If there is a field @x@ in the record type @r@, returns the type of the
   -- field.  The field must have a simple type of kind 'Type' (i.e. it may not
@@ -776,14 +831,19 @@ follows::
   type family FieldType (x :: Symbol) (r :: Type) :: Type
 
 
-To summarise the changes:
+To summarise the changes relative to the previously-accepted `proposal #158
+<https://github.com/ghc-proposals/ghc-proposals/pull/158>`_:
 
 * The ``HasField`` class has been renamed to ``GetField``.  In its place there
   is a new ``HasField`` constraint synonym for the pair of constraints
   ``GetField`` and ``SetField``.
 
 * ``SetField`` is now a constraint synonym for ``SetFieldPoly``, a new class
-  that permits type-changing update.
+  that permits type-changing update.  A new ``HasFieldPoly`` constraint synonym
+  permits both field selection and type-changing update.
+
+* The ``setField`` function now takes the field value first, followed by the
+  record value.
 
 * The classes are polymorphic in the runtime representation of the field type,
   allowing support for `Unlifted fields`_. Standalone kind signatures and
@@ -868,7 +928,7 @@ Definition: a type parameter ``x_i`` of the record type ``R x_0 ... x_n`` is
 
  * it occurs in the type ``u[x0, ..., xn]`` of the field ``foo``;
 
- * at least one occurrence is not under a type family; (TODO: define more precisely)
+ * at least one of the occurrences is rigid (i.e. not under a type family); (TODO: define more precisely)
 
  * it does not occur in the type of any other field.
 
@@ -1088,7 +1148,11 @@ individual design choice, but there are many minor variations possible.
   definition for the ``SetField`` class, including ``GetField`` as a
   superclass.
 
-* TODO: cite https://github.com/effectfully-ou/sketches/tree/master/has-lens-done-right
+* @effectfully described the `SameModulo approach
+  <https://github.com/effectfully-ou/sketches/tree/master/has-lens-done-right#the-samemodulo-approach-full-code>`_
+  which uses type families and an additional class to give a clever encoding of
+  type-changing update that supports phantom parameters and occurrences of type
+  variables under type families.
 
 Another possible approach is to abandon ``HasField`` as a solution to the
 "Records Problem" in Haskell.
