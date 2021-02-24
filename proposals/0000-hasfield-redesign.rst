@@ -178,16 +178,25 @@ Single class vs. multiple classes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 The dormant `proposal #286
 <https://github.com/ghc-proposals/ghc-proposals/pull/286>`_ suggests splitting
-``HasField`` into two classes, ``GetField`` and ``SetField``.  It is primarily
+``HasField`` into two classes, ``GetField`` and ``SetField``, permitting
+selection and update respectively.  The previous proposal was primarily
 motivated by the possibility of supporting read-only (virtual) fields.  (There
 is no proposed mechanism for normal record fields to be marked as being
 read-only or write-only to limit when the constraints should be solved
 automatically, but in principle this would be possible.)
 
-Another benefit of splitting into two classes is that it allows more precise
-types: a function of type
-``(GetField "foo" r Int, SetField "bar" r Bool) => r -> r``
-obviously can only read the ``foo`` field and write the ``bar`` field.
+We also propose splitting ``HasField`` into separate classes for selection and
+update, for the following additional reasons:
+
+* It allows more precise types: a function of type
+  ``(GetField "foo" r Int, SetField "bar" r Bool) => r -> r`` obviously can only
+  read the ``foo`` field and write the ``bar`` field.
+
+* It should lead to better compile-time performance (see `Compilation time
+  benefits of splitting classes`_).
+
+* It allows `Warnings for partial fields`_ that accurately reflect whether the
+  field is being projected or updated.
 
 
 Compilation time benefits of splitting classes
@@ -617,6 +626,61 @@ record selection and update may throw runtime exceptions, as in these examples::
   oops1 = partial t
   oops2 = t { partial = 0 }
 
+Many Haskell programmers prefer not to define partial fields, as part of a
+general desire to avoid unnecessary partiality (see for example `proposal #351
+<https://github.com/ghc-proposals/ghc-proposals/pull/351>`_).
+
+Partial fields may be identified at definition sites via the existing
+``-Wpartial-fields`` warning.  However, this is somewhat conservative: it is
+perfectly safe to *define* partial fields provided they are *used* only via
+record construction and pattern-matching, not via selection or update.  Users
+have `asked for the ability to prevent unsafe uses while permitting datatype
+definitions
+<https://www.reddit.com/r/haskell/comments/ln6eu1/implementation_of_nofieldselectors_is_merged/gnzviyt/>`_,
+because giving field names can help with readability when a datatype has many
+constructors and many fields.
+
+
+Warnings for partial fields
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+There is an existing warning flag ``-Wincomplete-record-updates`` that will emit
+a warning when a traditional record update refers to a partial field.  However,
+there is no corresponding flag for traditional selector functions, though it has
+been requested (`#7169 <https://gitlab.haskell.org/ghc/ghc/-/issues/7169>`_,
+`#17100 <https://gitlab.haskell.org/ghc/ghc/-/issues/17100>`_).  (The
+``NoFieldSelectors`` extension can be used to banish such selectors altogether.)
+
+At present, the automatic solving of ``HasField`` constraints for partial fields
+will silently make use of partial selector functions, without emitting a
+warning.  So far no proposal has considered this issue in the context of
+introducing ``setField`` (though see `#18650
+<https://gitlab.haskell.org/ghc/ghc/-/issues/18650>`_).
+
+To address this, we propose:
+
+* adding a new flag ``-Wincomplete-record-selectors`` that will warn on
+  occurrences of partial selector functions, including when they are used to
+  solve ``GetField`` constraints;
+
+* extending the existing ``-Wincomplete-record-updates`` to warn when a
+  ``SetField`` constraint is solved for a partial field.
+
+The new warnings would not (for now) be implied by ``-Wall``, just as
+``-Wincomplete-record-updates`` and ``-Wpartial-fields`` are not.
+
+This does not make it possible for a library author to define a datatype with
+partial fields such that their users *cannot* use partial operations (even under
+``NoFieldSelectors``, it will still be possible to solve ``GetField``
+constraints and hence use record dot syntax for selection).  Instead, downstream
+modules will need to enable
+``-Werror=incomplete-record-selectors -Werror=incomplete-record-updates`` in
+order to rule out such cases.  We could imagine somehow annotating datatypes to
+impose restrictions such as preventing selection or update, but this is not part
+of the current proposal.
+
+
+Affine traversals
+^^^^^^^^^^^^^^^^^
 Optics libraries in principle have a better story to tell here. Partial fields
 give rise to *affine traversals*, where the accessor function returns a
 ``Maybe`` value and the setter leaves the value unchanged if it does not mention
@@ -624,7 +688,7 @@ the field (rather than throwing a runtime exception).
 
 We could consider supporting this using built-in classes like the following::
 
-  class HasPartialField x r a | x r -> a where
+  class GetPartialField x r a | x r -> a where
     getPartialField :: r -> Maybe a
 
   class SetPartialField x s t a b | x s -> a, x t -> b, x s b -> t, x t a -> s where
@@ -636,11 +700,9 @@ Note that ``setField`` and ``setPartialField`` have the same type, but
 ``setField`` throws an exception on missing fields, whereas ``setPartialField``
 returns the value unchanged.
 
-For now we propose not to include such support for partial fields, although it
-might be a useful future extension.  Alternatively, partial fields may be ruled
-out at definition sites via the existing ``-Wpartial-fields``, or ruled out at
-use sites via `proposed new warnings
-<https://gitlab.haskell.org/ghc/ghc/-/issues/18650>`_.
+For now we propose not to include support for partial fields through the
+``GetPartialField`` and ``SetPartialField`` constraints and ``FieldType`` type
+family, although they might be considered again in the future.
 
 
 Kind of field labels
@@ -757,6 +819,32 @@ preferable, we propose to permit changing the types of ``getField``,
 ``setField`` and ``setFieldPoly`` to use visible dependent quantification if and
 when this is supported by GHC.
 
+
+Virtual fields
+~~~~~~~~~~~~~~
+A "virtual field" is an instance of a ``GetField`` or ``SetField`` constraint
+that is defined explicitly by the user, and which does not correspond to an
+existing record datatype.  For example::
+
+  data V = MkV Int
+
+  instance GetField "foo" V Int where
+    getField (MkV i) = i
+
+  instance SetFieldPoly "foo" V V Int Int where
+    setField i (MkV _) = MkV i
+
+Even though ``V`` is not defined as a record, the presence of these instances
+means ``foo`` can be used as a field, e.g. ``let e = MkV i in e.foo`` is
+accepted with ``RecordDotSyntax``.  This can be particularly useful in
+conjunction with record pattern synonyms, as pattern synonyms do not lead to
+``GetField`` and ``SetField`` constraints being solved automatically (see
+discussion of `Pattern synonyms`_ below).
+
+Splitting ``HasField`` into separate ``GetField`` and ``SetField`` classes means
+it is possible to define get-only or set-only virtual fields.
+
+Manual instances of ``GetField`` or ``SetField``
 
 
 Proposed Change Specification
@@ -926,11 +1014,11 @@ GHC's constraint solver when the following hold:
 Definition: a type parameter ``x_i`` of the record type ``R x_0 ... x_n`` is
 *modifiable* if:
 
- * it occurs in the type ``u[x0, ..., xn]`` of the field ``foo``;
+* it occurs in the type ``u[x0, ..., xn]`` of the field ``foo``;
 
- * at least one of the occurrences is rigid (i.e. not under a type family); (TODO: define more precisely)
+* at least one of the occurrences is rigid (i.e. not under a type family); (TODO: define more precisely)
 
- * it does not occur in the type of any other field.
+* it does not occur in the type of any other field.
 
 Suppose without loss of generality that ``t = R t_0 ... t_n`` (otherwise
 interchange ``s`` and ``t``, noting that if both ``s`` and ``t`` are already
@@ -950,8 +1038,6 @@ emit new constraints as follows.
 
 * any constraints from the datatype context (defined with ``DatatypeContexts``),
   if there is one.
-
-TODO: explore DYSFUNCTIONAL implications... are we violating the fundep? does it matter?
 
 TODO: explain when manual SetField instances are permitted?
 
@@ -1029,6 +1115,15 @@ TODO: examples of solving!
 Effect and Interactions
 -----------------------
 
+RecordDotSyntax
+~~~~~~~~~~~~~~~
+This proposal will change inferred types of expressions written with
+``RecordDotSyntax``, as we now have ``(.foo) :: GetField "foo" r a => r -> a``
+instead of ``(.foo) :: HasField "foo" r a => r -> a``.  However, the existence
+of the ``HasField`` constraint synonym should mean that user-written type
+signatures mentioning ``HasField`` continue to be accepted.
+
+
 ``NoFieldSelectors`` and ``-fno-generate-record-selectors``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 The accepted `proposal #160
@@ -1098,9 +1193,9 @@ automatically be solved.  This means that ``RecordDotSyntax`` and optics-based
 approaches using ``HasField`` will expose the difference between a record
 datatype and the corresponding pattern synonym.
 
-A workaround for this exists in the form of "virtual record fields" given by
-manual ``HasField`` instances.  For this example, the user could define an
-(orphan) instance::
+A workaround for this exists in the form of `Virtual fields`_ given by manual
+``HasField`` instances.  For this example, the user could define an (orphan)
+instance::
 
   instance a ~ b => GetField "theValue" (Maybe a) b where
     getField = theValue
