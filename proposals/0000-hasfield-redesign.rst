@@ -32,8 +32,8 @@ automatically with a dictionary derived from the record selector function for
 the field.
 
 This makes it possible to get a form of type-directed name resolution for field
-names: given the expression ``getField @"foo" t``, the inferred type of ``t``
-can be used to determine which ``foo`` field is meant, even if there are
+selection: given the expression ``getField @"foo" t``, the inferred type of
+``t`` can be used to determine which ``foo`` field is meant, even if there are
 multiple ``foo`` fields in scope and hence the expression ``foo t`` would be
 ambiguous.  (This arises in particular with the ``DuplicateRecordFields``
 extension, which has a somewhat ad hoc mechanism for disambiguating such
@@ -42,19 +42,23 @@ expressions that is to be removed following `proposal #366
 
 However, the status quo is lacking in two important respects:
 
-1. There is no facility for updating fields.
+1. There is no facility for updating fields, corresponding to record update
+   syntax ``t { foo = v }`` in traditional Haskell.
 
 2. The syntax ``getField @"foo"`` is rather convoluted.
 
 As a result, ``HasField`` has seen relatively little use to date.  Several more
 recent proposals have suggested changes to address this; they are recapitulated
-in subsequent sections.  In particular, `proposal #158
-<https://github.com/ghc-proposals/ghc-proposals/pull/158>`_ plans to change the
-definition of ``HasField`` to support updates, and `proposal #282
-<https://github.com/ghc-proposals/ghc-proposals/pull/282>`_ introduces a new
-``RecordDotSyntax`` extension to provide better syntax.  In the light of
-experience implementing these proposals, it seems worth systematically
-re-evaluating the design choices surrounding ``HasField``.
+in subsequent sections.  In particular, the accepted `proposal #158
+<https://github.com/ghc-proposals/ghc-proposals/pull/158>`_ planned to change
+the definition of ``HasField`` to support updates, and the accepted `proposal
+#282 <https://github.com/ghc-proposals/ghc-proposals/pull/282>`_ (as modified by
+`proposal #405 <https://github.com/ghc-proposals/ghc-proposals/pull/405>`_)
+introduced new extensions to provide "record dot syntax".  In the light of
+experience implementing these proposals, and discussion arising from `proposal
+#405 <https://github.com/ghc-proposals/ghc-proposals/pull/405>`_, it seems worth
+systematically re-evaluating the design choices surrounding ``HasField`` and
+type-directed name resolution for field updates.
 
 
 Recap: Planned changes to HasField
@@ -82,81 +86,83 @@ slow down compilation of all programs with records for the benefit only of those
 using ``HasField``.
 
 
-Recap: Planned RecordDotSyntax extension
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Recap: Record dot syntax
+~~~~~~~~~~~~~~~~~~~~~~~~
 The accepted `proposal #282
-<https://github.com/ghc-proposals/ghc-proposals/pull/282>`_ defined a new
-extension ``RecordDotSynax``, which adds syntax for record selection using
-dot-notation, and changes the interpretation of the existing record update
-syntax.  For example, under the proposed extension, ``t.foo`` translates to
-``getField @"foo"`` and ``t { foo = e }`` translates to ``setField @"foo" t e``.
-The latter relies on the planned introduction of ``setField`` from
-`proposal #158 <https://github.com/ghc-proposals/ghc-proposals/pull/158>`_.
+<https://github.com/ghc-proposals/ghc-proposals/pull/282>`_ (as modified by
+`proposal #405 <https://github.com/ghc-proposals/ghc-proposals/pull/405>`_)
+defined two new extensions for "record dot syntax":
 
+* ``OverloadedRecordDot`` adds dot syntax for record selection, interpreted
+   using ``getField``, e.g. ``t.foo`` translates to ``getField @"foo"``.
 
-Recap: OverloadedLabels
-~~~~~~~~~~~~~~~~~~~~~~~
-The ``OverloadedLabels`` extension (see the accepted `proposal #6
-<https://github.com/ghc-proposals/ghc-proposals/pull/6>`_) allows an overloaded
-label ``#foo`` to be interpreted as a call to
-``fromLabel :: IsLabel "foo" a => a``.  This was designed to provide a syntax
-for record field selection by giving an ``IsLabel`` instance for the function
-space.  However, because of controversy over whether an overloaded label should
-be interpreted as a selector function or a van Laarhoven lens, this proposal has
-not been implemented fully: ``base`` does not currently define an ``IsLabel``
-instance for functions.
+* ``OverloadedRecordUpdate`` changes the interpretation of the existing record
+  update syntax to use ``setField``, e.g. ``t { foo = e }`` translates to
+  ``setField @"foo" t e``.  This relies on the planned introduction of
+  ``setField`` from `proposal #158
+  <https://github.com/ghc-proposals/ghc-proposals/pull/158>`_.
 
-It is possible to define one of two orphan ``IsLabel`` instances for functions,
-allowing overloaded labels to be used as either record selectors or van
-Laarhoven lenses, depending on which instance is defined.  However these cannot
-be used simultaneously, so libraries cannot safely depend on them.
+Originally these were bundled together under one ``RecordDotSyntax`` extension,
+but they were separated under `proposal #405
+<https://github.com/ghc-proposals/ghc-proposals/pull/405>`_.  GHC 9.2 is
+expected to have full support for ``OverloadedRecordDot``, but
+``OverloadedRecordUpdate`` will not be fully implemented and will be regarded as
+subject to change in subsequent releases.
 
-The ``optics`` library defines a representation of lenses and other optics that
-uses an abstract newtype, rather than a type synonym for a van Laarhoven lens
-(as in the ``lens`` library).  Thus it can interpret overloaded labels as optics
-without problems.
+A particular point of controversy is type-changing update.  The ``setField``
+operation from `proposal #158
+<https://github.com/ghc-proposals/ghc-proposals/pull/158>`_ does not allow
+type-changing update, and since `proposal #282
+<https://github.com/ghc-proposals/ghc-proposals/pull/282>`_ built upon it,
+``RecordDotSyntax`` as originally accepted by the GHC Steering Committee did not
+permit type-changing update.  However committee discussion on `proposal #405
+<https://github.com/ghc-proposals/ghc-proposals/pull/405>`_ made it clear that
+this question should be re-addressed.
 
 
 Design aims and objectives
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
-The aim of this proposal is to redesign ``HasField`` in a way that balances the
-interests of different groups of users:
+The aims of this proposal are:
 
-* Those who plan to use ``RecordDotSyntax`` when it is available.
+* to articulate the various design choices to be made regarding the ``HasField``
+  class, and agree and clearly specify a final design; and
+
+* to seek agreement on whether type-changing update should be available under
+  ``OverloadedRecordUpdate`` (as this question was reopened in the discussion on
+  `proposal #405 <https://github.com/ghc-proposals/ghc-proposals/pull/405>`_).
+
+We seek to balance the interests of different groups of users:
+
+* Those who use record dot syntax when it is available.
 
 * Those who use optics libraries (such as ``lens`` and ``optics``), and wish to
   have the ability to construct lenses for record fields conveniently.
 
-* Those who do not wish to use ``HasField`` at all, for whom the main
-  requirement is that it should not affect them (in particular, it should not
-  impose a compile-time performance penalty).
+* Those who do not use ``HasField`` at all.
 
 In order to achieve this, this proposal has the following objectives:
 
-* ``HasField`` should offer a foundation for both ``RecordDotSyntax`` and
-  optics-based approaches to record operations, without privileging either
-  approach.
+* ``HasField`` should offer a foundation for both record dot syntax and
+  optics-based approaches to record operations.
 
 * As far as possible, type inference behaviour and type error messages directly
   related to ``HasField`` should be easy for users to understand.
 
-* We should not impose a compile-time performance cost on code that does not use
-  ``HasField``.  Costs for using ``HasField`` should be comparable to normal
-  uses of record syntax.
-
-* The design should be clearly specified, with the various trade-offs
-  articulated and considered together.
+* There should be no compile-time performance cost imposed on code that does not
+  use ``HasField``, while the cost for using ``HasField`` should be comparable
+  to normal uses of record syntax.
 
 Equally important are the things that we do not propose to tackle with this
 proposal:
 
-* The API provided by the ``GHC.Records`` module itself is not designed to be
-  called directly by normal users; nor are they routinely expected to define
-  their own ``HasField`` instances.  Rather, the ``GHC.Records`` API should
-  provide the necessary internal functionality for user-facing features such as
-  ``RecordDotSyntax``, and libraries such as ``optics``.
+* The API provided by the ``GHC.Records`` module itself is not expected to be
+  called directly by typical users.  Rather, this module should provide the
+  necessary internal functionality for record dot syntax, and for libraries such
+  as ``optics``.  While it is possible for users to define "virtual fields" by
+  writing explicit ``HasField`` instances, they are not expected to do so
+  routinely.
 
-* Support for anonymous records is not in scope for this proposal. There are
+* Support for anonymous records is not considered in this proposal. There are
   many design choices around different ways to integrate anonymous records with
   Haskell, and the right way forward is not obvious. ``HasField`` should reflect
   the capabilities of existing Haskell records, and need not offer capabilities
@@ -165,6 +171,10 @@ proposal:
   <https://github.com/ghc-proposals/ghc-proposals/pull/180>`_ which seeks to add
   support for row polymorphism.)
 
+* This proposal does not change any syntax.  Syntactic questions were discussed
+  extensively in `proposal #282
+  <https://github.com/ghc-proposals/ghc-proposals/pull/282>`_.
+
 
 Design questions
 ----------------
@@ -172,6 +182,28 @@ Design questions
 Having established overall criteria for the design in the previous section, we
 will now review the various specific design choices that arise with
 ``HasField``, and propose a resolution in each case.
+
+
+Order of arguments to setField
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+`Proposal #158 <https://github.com/ghc-proposals/ghc-proposals/pull/158>`_
+specifies that the type of ``setField`` is ``HasField x r a => r -> a -> r``.
+However, swapping the order of arguments so that the new field value is first
+means that composing of multiple updates for a single record becomes simpler::
+
+  setField :: HasField x r a => a -> r -> r
+
+  example :: (HasField "age" r Int, HasField "colour" r String) => r -> r
+  example = setField @"age" 42 . setField @"colour" "Blue"
+
+While we do not typically expect users to call ``setField`` directly, in cases
+where they prefer to do so, this seems like a good reason to prefer this
+argument order.  Moreover, this order is consistent with the ``set`` function in
+the ``lens`` and ``optics`` libraries.  It is not clear what the rationale was
+for the alternative order in the previous proposal.
+
+The remainder of this proposal assumes that calls to ``setField`` take the field
+value first, followed by the record.
 
 
 Single class vs. multiple classes
@@ -192,11 +224,11 @@ update, for the following additional reasons:
   ``(GetField "foo" r Int, SetField "bar" r Bool) => r -> r`` obviously can only
   read the ``foo`` field and write the ``bar`` field.
 
+* It allows `Warnings for partial fields`_ that accurately reflect whether the
+  field is being selected or updated.
+
 * It should lead to better compile-time performance (see `Compilation time
   benefits of splitting classes`_).
-
-* It allows `Warnings for partial fields`_ that accurately reflect whether the
-  field is being projected or updated.
 
 
 Compilation time benefits of splitting classes
@@ -230,32 +262,32 @@ There are various options for the superclass relationships between the split
 classes.  `Proposal #286
 <https://github.com/ghc-proposals/ghc-proposals/pull/286>`_ suggests having
 ``GetField`` be a superclass of ``SetField``, however this would rule out the
-possibility of set-only fields and make the dictionary more complex to build at
-compile time.
+possibility of set-only fields.
 
-Instead we propose the following design, ignoring `type-changing update`_ and
-`functional dependencies`_ for now::
+Instead we propose that ``GetField`` and ``SetField`` should be independent
+classes, with no superclasses, and that ``HasField`` should be a constraint
+synonym for both constraints.  That is, ignoring `type-changing update`_ and
+questions around `functional dependencies`_ vs. type families for now, the
+design would look something like::
 
   class GetField x r a where
     getField :: r -> a
 
   class SetField x r a where
-    setField :: r -> a -> r
+    setField :: a -> r -> r
 
   type HasField x r a = (GetField x r a, SetField x r a)
 
-Here ``GetField`` and ``SetField`` are independent.  In both cases the
-underlying dictionaries are newtypes, and should be comparatively cheap to
-construct.
+Since ``GetField`` and ``SetField`` are independent, the underlying dictionaries
+are newtypes, which would not be the case if there were superclasses involved.
 
-``HasField`` is a constraint synonym for the pair of constraints ``GetField``
-and ``SetField``.  Its inclusion means that when both ``getField`` and
-``setField`` are used, users can write simpler types, and GHC can (at least in
-principle) infer such types.
+Including the ``HasField`` constraint synonym means that where both ``getField``
+and ``setField`` are used, users can write simpler types, and GHC can use it to
+represent inferred types more simply.
 
 This change is not entirely backwards compatible.  Existing code using
 ``HasField`` should mostly continue to work, provided it does not define virtual
-fields or use an explicit import ``import GHC.Records (HasField(getField))``.
+fields or use an explicit import such as ``import GHC.Records (HasField(getField))``.
 Code defining virtual fields via explicit ``HasField`` instances will need to be
 modified to define instances of ``GetField`` and ``SetField`` instead.
 
@@ -268,41 +300,32 @@ data structure (e.g. a map), it may be possible to implement an operation that
 gets and modifies a field more efficiently than defining it from ``getField``
 and ``setField``.  This is why `proposal #158
 <https://github.com/ghc-proposals/ghc-proposals/pull/158>`_ settled on
-``hasField :: r -> (a -> r, a)``.
+``hasField :: r -> (a -> r, a)``.  This represents a lens, i.e. the combination
+of a getter and setter into a single value, although it uses a first-order
+representation that is simpler and does not compose as well as the "van
+Laarhoven" representation of lenses.
 
-However in practice this is likely to be rare, and does not arise for normal
-record types with the built-in constraint-solving behaviour. Where this matters,
-users are likely to be better off using an optics library, and can always define
-an auxiliary class such as the following::
+However practical cases where the choice of ``hasField``
+vs. ``getField``+``setField`` matters are likely to be rare.  In particular,
+normal record types with the built-in constraint-solving behaviour do not gain
+anything from ``hasField``. Where this matters, users are likely to be better
+off using an optics library.  Thus we prefer the simplicity of separate classes
+in the ``GHC.Records`` API.
+
+If users do wish to organise field-like lenses into a class, they can define an
+auxiliary class such as the following::
 
   class HasField x r a => HasFieldLens x r a where
     fieldLens :: Lens' x r a
     fieldLens = lens getField setField
 
+  -- Instance will be selected by default, but can be overridden by defining an
+  -- instance for a specific type with a non-default `fieldLens` implementation
   instance {-# OVERLAPPABLE #-} HasField x r a => HasFieldLens x r a
 
 We do not propose to add such a class to ``GHC.Records``, since it is better
 defined by specific optics libraries.  (The ``optics`` library defines a class
 ``LabelOptic`` that plays essentially this role.)
-
-
-Order of arguments to setField
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-`Proposal #158 <https://github.com/ghc-proposals/ghc-proposals/pull/158>`_
-specifies that the type of ``setField`` is ``HasField x r a => r -> a -> r``.
-However, swapping the order of arguments so that the new field value is first
-means that composing of multiple updates for a single record becomes simpler::
-
-  setField :: HasField x r a => a -> r -> r
-
-  example :: (HasField "age" r Int, HasField "colour" r String) => r -> r
-  example = setField @"age" 42 . setField @"colour" "Blue"
-
-While we do not typically expect users to call ``setField`` directly, in cases
-where they prefer to do so, this seems like a good reason to prefer this
-argument order.  Moreover, this order is consistent with the ``set`` function in
-the ``lens`` and ``optics`` libraries.  It is not clear what the rationale was
-for the alternative order in the previous proposal.
 
 
 Functional dependencies
@@ -418,27 +441,29 @@ a whole.  For example::
   typeChangingUpdate :: T () -> T Bool
   typeChangingUpdate t = t { foo = True }
 
+Type inference for such definitions is relatively unproblematic in traditional
+Haskell, because the field name must uniquely determine the record type being
+updated, or else the definition is rejected as ambiguous.  The situation is more
+complex in the context of ``SetField``, where definitions may be polymorphic in
+the record type to which they relate.
+
 `Proposal #158 <https://github.com/ghc-proposals/ghc-proposals/pull/158>`_ does
-not permit such type-changing updates, because defines a setter operation
+not permit such type-changing updates, because it defines a setter operation
 ``setField :: HasField x r a => r -> a -> r`` where the input and output record
 types must both be ``r``.  This has the significant merit of simplicity, because
 type inference has more information to work with, and there is no need to
 specify under which circumstances type-changing updates are allowed.
 
-However, type-changing updates are desirable for optics libraries, as the
-restriction to non-type-changing update would mean they are unable to switch to
-using ``HasField`` without loss of functionality.  Such a switch is desirable
-for optics libraries because at the moment users must either (a) define lenses
-for fields manually, (b) use Template Haskell which causes difficulties for
-cross-compilation and compile-time performance issues, or (c) use generic
-programming which imposes compile-time and runtime performance limitations.
+However, type-changing updates are desirable for libraries such as ``optics``.
+Moreover, some people would prefer type-changing update to be supported by
+record dot syntax, although this is controversial.
 
 In the light of this, we propose adding support for type-changing update to the
 ``GHC.Records`` API.  In particular, ``GHC.Records`` will expose both a function
 ``setFieldPoly`` that permits type-changing update and a function ``setField``
 that specialises it to the case when type-changing update is not available::
 
-  class SetFieldPoly x s t a b | x s -> a l, x t -> b l, x s b -> t, x t a -> s where
+  class SetFieldPoly x s t b | ... where
     setFieldPoly :: b -> s -> t
 
   type SetField x r a = SetFieldPoly x r r a a
@@ -446,11 +471,71 @@ that specialises it to the case when type-changing update is not available::
   setField :: forall x r a . SetField x r a => a -> r -> r
   setField = setFieldPoly @x
 
-In accordance with `proposal #282
-<https://github.com/ghc-proposals/ghc-proposals/pull/282>`_, the
-``RecordDotSyntax`` extension will continue to use ``setField`` and hence
-**not** permit type-changing updates, i.e. turning on ``RecordDotSyntax`` would
-cause the definition of ``typeChangingUpdate`` above to be rejected.
+Crucially, using the ``SetField`` constraint synonym or the ``setField``
+function ensures that the record type cannot change, so type inference behaviour
+should be exactly the same as if type-changing update were not available at all.
+However, users who need type-changing update can use ``SetFieldPoly`` instead.
+
+This leaves open two questions:
+
+* Should record update syntax permit type-changing update?
+
+* How should type inference work for ``SetFieldPoly`` constraints?
+
+
+Type-changing ``OverloadedRecordUpdate``?
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+The original plan for the ``OverloadedRecordUpdate`` extension (`proposal #282
+<https://github.com/ghc-proposals/ghc-proposals/pull/282>`_ and `proposal #405
+<https://github.com/ghc-proposals/ghc-proposals/pull/405>`_) was that it would
+**not** permit type-changing updates, i.e. it would use ``setField`` rather than
+``setFieldPoly`` (in the language of the current proposal).  Thus, turning on
+``OverloadedRecordUpdate`` would cause the definition of ``typeChangingUpdate``
+above to be rejected, which is unfortunate.
+
+Opinion is divided as to how important type-changing update is, with some people
+willing to give it up and others concerned about its loss.  Thus we can consider
+several alternative possibilities:
+
+* Translate ``OverloadedRecordUpdate`` using ``setField`` so it is not
+  type-changing.  This is simple but restrictive, and in particular means that
+  enabling ``OverloadedRecordUpdate`` may break existing code.
+
+* Translate ``OverloadedRecordUpdate`` using ``setFieldPoly`` so it allows
+  type-changing updates after all, at least in some circumstances.  This means
+  users need to understand the rules around when ``SetFieldPoly`` constraints
+  will be solved.
+
+* Introduce new syntax to distinguish type-changing from non-type-changing
+  updates.
+
+* Introduce new syntax for performing an update while specifying the type being
+  updated, as in `proposal #310
+  <https://github.com/ghc-proposals/ghc-proposals/pull/310>`_.  This is
+  comparable to the ``DisambiguateRecordFields`` extension, which uses the data
+  constructor in a record construction or pattern match to determine the type
+  without need for type-directed field resolution.  This would make it possible
+  to write type-changing updates (or other updates not supported by
+  ``SetFieldPoly``), but would not allow overloading.
+
+In any case, users can always enable ``OverloadedRecordDot`` without
+``OverloadedRecordUpdate``, meaning that dot notation for selection is
+available, while updates are still treated in the traditional manner and may be
+type-changing but not overloaded.
+
+Deciding between these alternatives depends to some extent on how type inference
+works for ``SetFieldPoly`` constraints, to which we turn next.
+
+
+Type inference for ``SetFieldPoly`` constraints
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TODO:
+ - We need to decide what the functional dependencies on ``SetFieldPoly`` should be.
+ - The "obvious" solution is not expressive enough and yet does not infer enough either.
+ - The "dysfunctional" solution allows everything and seems to work nicely in practice,
+   although it violates principal types.
+
+TODO: rewrite the following subsections
 
 
 Modifiable parameters and multiple updates
@@ -534,6 +619,14 @@ user can write a function that pattern matches on the data constructor (provided
 it is in scope!).
 
 
+TODO: perhaps we can drop the functional dependencies s b -> t, t a -> s?
+ - only needed for avoiding ambiguity errors in composition?
+ - alternative: for ambiguity check purposes, pretend we have s -> t and t -> s
+
+TODO: improve error messages in the set-with-wrong-type case!
+
+
+
 Type parameters occurring under type families
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 Consider the following definitions::
@@ -608,6 +701,8 @@ to ``SetField``, because there we really need the value being set to be
 polymorphic.  Moreover, it violates the functional dependency ``x r -> a``
 on the ``GetField`` class, which is undesirable as discussed in previous
 sections.
+
+TODO: expand on this / think about whether to do higher-rank thing
 
 Accordingly, we propose that ``GetField`` or ``SetFieldPoly`` constraints
 involving fields with higher-rank types should not be solved automatically.
@@ -820,33 +915,6 @@ preferable, we propose to permit changing the types of ``getField``,
 when this is supported by GHC.
 
 
-Virtual fields
-~~~~~~~~~~~~~~
-A "virtual field" is an instance of a ``GetField`` or ``SetField`` constraint
-that is defined explicitly by the user, and which does not correspond to an
-existing record datatype.  For example::
-
-  data V = MkV Int
-
-  instance GetField "foo" V Int where
-    getField (MkV i) = i
-
-  instance SetFieldPoly "foo" V V Int Int where
-    setField i (MkV _) = MkV i
-
-Even though ``V`` is not defined as a record, the presence of these instances
-means ``foo`` can be used as a field, e.g. ``let e = MkV i in e.foo`` is
-accepted with ``RecordDotSyntax``.  This can be particularly useful in
-conjunction with record pattern synonyms, as pattern synonyms do not lead to
-``GetField`` and ``SetField`` constraints being solved automatically (see
-discussion of `Pattern synonyms`_ below).
-
-Splitting ``HasField`` into separate ``GetField`` and ``SetField`` classes means
-it is possible to define get-only or set-only virtual fields.
-
-Manual instances of ``GetField`` or ``SetField``
-
-
 Proposed Change Specification
 -----------------------------
 
@@ -886,8 +954,8 @@ follows::
   -- This will be solved automatically for built-in records where the field is
   -- in scope, but manual instances may be provided as well.
   --
-  type SetFieldPoly :: forall {l} . Symbol -> Type -> Type -> TYPE l -> TYPE l -> Constraint
-  class SetFieldPoly x s t a (b :: TYPE l) | x s -> a l, x t -> b l, x s b -> t, x t a -> s where
+  type SetFieldPoly :: forall {l} . Symbol -> Type -> Type -> TYPE l -> Constraint
+  class SetFieldPoly x s t (b :: TYPE l) | x t -> b s l, x s -> t l where
     -- | Update function to set the field @x@ in the record @s@.  Permits
     -- type-changing update.
     setFieldPoly :: b -> s -> t
@@ -895,7 +963,7 @@ follows::
   -- | Constraint representing the fact that a field @x@ of type @a@ can be
   -- selected from the record type @r@.
   type SetField :: forall {l} . Symbol -> Type -> TYPE l -> Constraint
-  type SetField x r a = SetFieldPoly x r r a a
+  type SetField x r a = SetFieldPoly x r r a
 
   -- | Update function to set the field @x@ in the record @r@.  Does not permit
   -- type-changing update.
@@ -911,13 +979,12 @@ follows::
   -- selected from the record @s@, or updated with a value of type @b@ to
   -- produce a record of type @t@.
   type HasFieldPoly :: forall {l} . Symbol -> Type -> Type -> TYPE l -> TYPE l -> Constraint
-  type HasFieldPoly x s t a b = (GetField x s a, GetField x t b, SetFieldPoly x s t a b)
+  type HasFieldPoly x s t a b = (GetField x s a, GetField x t b, SetFieldPoly x s t b)
 
   -- | If there is a field @x@ in the record type @r@, returns the type of the
   -- field.  The field must have a simple type of kind 'Type' (i.e. it may not
   -- be higher-rank, existential or unboxed).
   type family FieldType (x :: Symbol) (r :: Type) :: Type
-
 
 To summarise the changes relative to the previously-accepted `proposal #158
 <https://github.com/ghc-proposals/ghc-proposals/pull/158>`_:
@@ -976,6 +1043,9 @@ emit new constraints:
 * any constraints from the datatype context (defined with ``DatatypeContexts``),
   if there is one.
 
+If the field is partial, and the new ``-Wincomplete-record-selectors`` flag is
+enabled, a warning will be emitted.
+
 Note that:
 
 * If ``R`` is a data family, it is considered a record type iff there is an
@@ -984,6 +1054,8 @@ Note that:
 * Solving the equation between the wanted and actual field types will fill in
   the inferred parameter ``l :: RuntimeRep`` with the appropriate
   representation.  This means support for unlifted fields is automatic.
+
+TOOD: explain when manual GetField instances are permitted.
 
 
 Solving ``SetFieldPoly`` constraints
@@ -1039,7 +1111,10 @@ emit new constraints as follows.
 * any constraints from the datatype context (defined with ``DatatypeContexts``),
   if there is one.
 
-TODO: explain when manual SetField instances are permitted?
+If the field is partial, and the ``-Wincomplete-record-updates`` flag is
+enabled, a warning will be emitted.
+
+TODO: explain when manual SetFieldPoly instances are permitted?
 
 
 Reducing the ``FieldType`` type family
@@ -1069,10 +1144,10 @@ When a module defines large record types, the compile-time cost of generating
 updater functions up front at datatype definition sites becomes significant (see
 the `implementation of proposal #158
 <https://gitlab.haskell.org/ghc/ghc/-/merge_requests/3257>`_).  In a code base
-that makes infrequent use of ``setField`` (or mechanisms that depend upon it,
-such as record updates under ``RecordDotSyntax``), it is not desirable to pay
-this cost for up front compilation of updaters.  Instead, by default GHC should
-solve ``SetField`` constraints by generating an updater function on-the-fly.
+that makes infrequent use of mechanisms that depend upon ``setField``, it is not
+desirable to pay this cost for up front compilation of updaters.  Instead, by
+default GHC should solve ``SetField`` constraints by generating an updater
+function on-the-fly.
 
 On the other hand, code bases making substantial use of ``setField`` may benefit
 from generating updater functions in advance, because work will be saved at use
@@ -1115,13 +1190,36 @@ TODO: examples of solving!
 Effect and Interactions
 -----------------------
 
-RecordDotSyntax
-~~~~~~~~~~~~~~~
+Record dot syntax
+~~~~~~~~~~~~~~~~~
 This proposal will change inferred types of expressions written with
-``RecordDotSyntax``, as we now have ``(.foo) :: GetField "foo" r a => r -> a``
+``OverloadedRecordDot``, as we now have ``(.foo) :: GetField "foo" r a => r -> a``
 instead of ``(.foo) :: HasField "foo" r a => r -> a``.  However, the existence
 of the ``HasField`` constraint synonym should mean that user-written type
 signatures mentioning ``HasField`` continue to be accepted.
+
+
+OverloadedLabels
+~~~~~~~~~~~~~~~~
+The ``OverloadedLabels`` extension (see the accepted `proposal #6
+<https://github.com/ghc-proposals/ghc-proposals/pull/6>`_) allows an overloaded
+label ``#foo`` to be interpreted as a call to
+``fromLabel :: IsLabel "foo" a => a``.  This was designed to provide a syntax
+for record field selection by giving an ``IsLabel`` instance for the function
+space.  However, because of controversy over whether an overloaded label should
+be interpreted as a selector function or a van Laarhoven lens, this proposal has
+not been implemented fully: ``base`` does not currently define an ``IsLabel``
+instance for functions.
+
+It is possible to define one of two orphan ``IsLabel`` instances for functions,
+allowing overloaded labels to be used as either record selectors or van
+Laarhoven lenses, depending on which instance is defined.  However these cannot
+be used simultaneously, so libraries cannot safely depend on them.
+
+The ``optics`` library defines a representation of lenses and other optics that
+uses an abstract newtype, rather than a type synonym for a van Laarhoven lens
+(as in the ``lens`` library).  Thus it can interpret overloaded labels as optics
+without problems.
 
 
 ``NoFieldSelectors`` and ``-fno-generate-record-selectors``
@@ -1174,6 +1272,31 @@ about this, as it requires new primitives and/or changes to Core, GHC's typed
 intermediate language.
 
 
+Virtual fields
+~~~~~~~~~~~~~~
+A "virtual field" is an instance of a ``GetField`` or ``SetField`` constraint
+that is defined explicitly by the user, and which does not correspond to an
+existing record datatype.  For example::
+
+  data V = MkV Int
+
+  instance GetField "foo" V Int where
+    getField (MkV i) = i
+
+  instance SetFieldPoly "foo" V V Int Int where
+    setField i (MkV _) = MkV i
+
+Even though ``V`` is not defined as a record, the presence of these instances
+means ``foo`` can be used as a field, e.g. ``let e = MkV i in e.foo`` is
+accepted with ``OverloadedRecordDot``.  This can be particularly useful in
+conjunction with record pattern synonyms, as pattern synonyms do not lead to
+``GetField`` and ``SetField`` constraints being solved automatically (see
+discussion of `Pattern synonyms`_ below).
+
+Splitting ``HasField`` into separate ``GetField`` and ``SetField`` classes means
+it is possible to define get-only or set-only virtual fields.
+
+
 Pattern synonyms
 ~~~~~~~~~~~~~~~~
 The ``PatternSynonyms`` extension allows the definition of record pattern
@@ -1215,14 +1338,14 @@ up front, rather than constructing them during constraint solving as required by
 ``-fno-generate-record-updaters``.  It does not seem like it will introduce a
 substantial maintenance burden.
 
-Novice users may find ``HasField`` and ``RecordDotSyntax`` more complex to
-reason about than traditional Haskell record syntax.  However this proposal has
-taken care to ensure the more complex aspects (e.g. type-changing update) need
-not be exposed to those who do not go looking for them.
+Novice users may find ``HasField`` and overloaded record dot syntax more complex
+to reason about than traditional Haskell record syntax.  However this proposal
+has taken care to ensure the more complex aspects (e.g. type-changing update)
+need not be exposed to those who do not go looking for them.
 
 For users who do not wish to use ``HasField`` at all, the approach taken in this
 proposal should mean they do not pay a compile-time performance cost, and can
-happily ignore the ``GHC.Records`` module and ``RecordDotSyntax`` extension.
+happily ignore the ``GHC.Records`` module and record dot syntax extensions.
 
 
 Alternatives
@@ -1270,20 +1393,26 @@ Another possible approach is to abandon ``HasField`` as a solution to the
 
 Unresolved Questions
 --------------------
-``SetFieldPoly`` is a terrible name. What should it be called?
 
-Are there other design choices surrounding ``HasField`` not yet considered here?
+* Should ``OverloadedRecordUpdate`` permit type-changing update via ``SetFieldPoly``?
 
-Does the ``FieldType`` type family pull its weight?  It is not necessary for
-normal use of ``HasField``, and can be approximated using ``GHC.Generics``.
+* Is the proposed constraint-solving behaviour for ``SetFieldPoly``
+  satisfactory?
+
+* ``SetFieldPoly`` is a terrible name. What should it be called?
+
+* Does the ``FieldType`` type family pull its weight?  It is not necessary for
+  normal use of ``HasField``, and can be approximated using ``GHC.Generics``.
+
+* Are there other design choices surrounding ``HasField`` not considered here?
 
 
 Implementation Plan
 -------------------
 The proposal author, Adam Gundry, will implement this change if accepted.  The
 implementation of this proposal (or some other way to support ``setField``) is
-currently blocking the full implementation of ``RecordDotSyntax`` (`proposal
-#282 <https://github.com/ghc-proposals/ghc-proposals/pull/282>`_).
+currently blocking the full implementation of ``OverloadedRecordUpdate``
+(`proposal #282 <https://github.com/ghc-proposals/ghc-proposals/pull/282>`_).
 
 
 Endorsements
