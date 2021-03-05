@@ -466,7 +466,7 @@ that specialises it to the case when type-changing update is not available::
   class SetFieldPoly x s t b | ... where
     setFieldPoly :: b -> s -> t
 
-  type SetField x r a = SetFieldPoly x r r a a
+  type SetField x r a = SetFieldPoly x r r a
 
   setField :: forall x r a . SetField x r a => a -> r -> r
   setField = setFieldPoly @x
@@ -529,6 +529,134 @@ works for ``SetFieldPoly`` constraints, to which we turn next.
 
 Type inference for ``SetFieldPoly`` constraints
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+For a ``GetField`` constraint (corresponding to a ``HasField`` constraint in
+existing GHC versions), the constraint solver will automatically solve a
+constraint like ``GetField "f" (T a b c) ty`` when ``T`` is a record datatype
+with a field ``f`` in scope.  That is, given a constraint ``GetField x r a``
+the ``x`` parameter must be a ``Symbol`` literal, the ``r`` parameter must be
+a record type constructor (applied to some arguments), and the record must have
+a field of the appropriate name.
+
+Correspondingly, we expect a non-type changing ``SetField "f" (T a b c) ty``
+constraint, which is equivalent to ``SetFieldPoly "f" (T a b c) (T a b c) ty``,
+to be solved automatically in the same way.
+
+However, this is not enough if we want to allow type-changing update.  For example::
+
+  data T a = MkT { f :: a }
+
+  fun :: T () -> T Int
+  fun t = setFieldPoly @"f" 0 t
+  -- constraint arising:  SetFieldPoly "f" (T ()) (T Int) alpha
+
+In this case the constraints to solve are ``Num alpha`` and
+``SetFieldPoly "f" (T ()) (T Int) alpha`` where ``alpha`` is a unification
+variable representing the type of the numeric literal ``0``.  Here the
+``SetFieldPoly`` constraint is easily solved as we do not require the type
+parameters for the two occurrences of ``T`` to be the same, and we do not need
+the field type to be determined.  Instead, we can see that the record type being
+updated is ``T``, and infer that the field type ``alpha`` from the constraint
+must match the actual type of the ``f`` field of ``T Int``, namely ``Int``.
+
+More interesting cases arise if we have partial type information::
+
+  fun2 t = setFieldPoly @"f" 0 (t :: T ())
+  -- interim inferred type:  T () -> beta
+  -- constraint arising:  SetFieldPoly "f" (T ()) beta alpha  (Num alpha)
+  -- final inferred type:  Num a => T () -> T a
+
+  fun3 t = (setFieldPoly @"f" 0 t) :: T Int
+  -- interim inferred type:  gamma -> T Int
+  -- constraint arising:  SetFieldPoly "f" gamma (T Int) alpha  (Num alpha)
+  -- final inferred type:  T a -> T Int
+
+In each case the comment shows the ``SetFieldPoly`` constraint that arises.  We
+can handle these constraints too, by exploiting the fact that type-changing
+update does not change the choice of record type constructor, merely its
+parameters.  Thus if *either* the ``s`` or ``t`` parameters is a concrete record
+type, we can infer that the other parameter must be some instance of the same
+record type/ For example, in the ``fun2`` case we infer that ``beta ~ T alpha1``
+for some fresh unification variable ``alpha1``, then unify the types for the
+field to get ``alpha ~ alpha1``.
+
+On the other hand, if neither record parameter is a concrete record type, we
+cannot determine the record type and solve the ``SetFieldPoly`` constraint but
+must generalise over it in the usual way::
+
+  fun4 t = setFieldPoly @"f" 0 t
+  -- interim inferred type:  delta -> epsilon
+  -- constraint arising:  SetFieldPoly "f" delta epsilon alpha
+  -- final inferred type:  (Num b, SetFieldPoly "f" s t b) => s -> t
+
+To recap, we have seen that it is unproblematic to support type-changing update
+where the record type is concrete (either before or after the update), and that
+simple cases of polymorphic updates are possible.
+
+However, things become more difficult if we try to *compose* polymorphic
+updates.  For example::
+
+  fun5 = setFieldPoly "g" True . setFieldPoly "f" ()
+  -- interim inferred type: beta -> delta
+  -- constraints arising:  SetFieldPoly "f" beta gamma ()
+  --                       SetFieldPoly "g" gamma delta Bool
+  -- final inferred type:  (SetFieldPoly "f" s t (), SetFieldPoly "g" t u Bool) => s -> u
+
+Here we have an ambiguity problem: the type variable ``t`` is ambiguous, because
+it appears only in the context to the left of the ``=>`` sign.  But rejecting
+this definition would be distinctly unsatisfactory, because it is perfectly
+possible to call ``fun5`` unambiguously: in a context that fixes ``s`` or ``u``
+to be a concrete record type with ``f`` and ``g`` fields, the ``SetFieldPoly``
+constraints will become solvable, and will determine the middle type ``t``
+automatically.
+
+The usual solution to such ambiguity problems would be to introduce functional
+dependencies between the parameters of the typeclass, e.g. previous designs for
+type-changing update have used something like::
+
+  class SetFieldPoly x s t b | x s b -> t where
+    setFieldPoly :: b -> s -> t
+
+Here the functional dependency ``x s b -> t`` asserts that the field name ``x``,
+input record type ``s`` and new field type ``b`` can be used to determine the
+output record type ``t``.  This would mean ``fun5`` was accepted without
+ambiguity, because the functional dependency can be used to determine ``t`` from
+``"f"``, ``s`` and ``()`` in ``SetFieldPoly "f" s t ()``.
+
+Unfortunately, this functional dependency is not sufficient to handle the
+following example, where the field types are not uniquely determined::
+
+  fun6 = setFieldPoly @"k" 0 . setFieldPoly @"h" []
+  -- interim inferred type: beta -> delta
+  -- constraints arising:  SetFieldPoly "h" beta gamma [alpha]
+  --                       SetFieldPoly "k" gamma delta epsilon  (Num epsilon)
+  -- final inferred type:  (Num b, SetFieldPoly "h" s t [a], SetFieldPoly "k" t u b) => s -> u
+
+Here ``t``, ``a`` and ``b`` are all ambiguous.
+
+Moreover, the functional dependency ``x s b -> t`` is too restrictive and rules
+out certain type-changing updates that are accepted by traditional Haskell
+record updates.  For example, this arises with `Phantom parameters`_.
+(TODO: incorporate section or expand.)
+
+TODO: have an example fun7 where we need to go in the other direction?
+
+
+Consider instead the following definition::
+
+  class SetFieldPoly x s t b | x s -> t, x t -> s b where
+    setFieldPoly :: b -> s -> t
+
+At first glance, this is somewhat surprising. It claims that if we know the
+field name ``x``, then knowledge of either ``s`` or ``t`` will allow the other
+type to be determined, regardless of the field type.  Morever, the field type
+``b`` can be determined from ``x`` and ``t``.  The strong functional
+dependencies mean that even examples like ``fun6`` are no problem, because there
+is no ambiguity.
+
+TODO: what goes wrong... and why it doesn't matter.
+
+
+
 TODO:
  - We need to decide what the functional dependencies on ``SetFieldPoly`` should be.
  - The "obvious" solution is not expressive enough and yet does not infer enough either.
@@ -1328,6 +1456,10 @@ particular, this is complicated by the possibilities that pattern synonyms may
 be defined independently of the underlying type (which would give rise to orphan
 instances, as in the ``Maybe`` example), the type need not even be a record, and
 multiple pattern synonyms may define conflicting fields for the same type.
+
+TODO: perhaps we should revisit this, and only report errors if we actually hit
+ambiguity when solving?
+
 
 
 Costs and Drawbacks
