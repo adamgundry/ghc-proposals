@@ -184,6 +184,13 @@ will now review the various specific design choices that arise with
 ``HasField``, and propose a resolution in each case.
 
 
+TODO: reorder?
+ - Short explanation of proposed "uncontroversial" changes, with forward pointers
+ - Type-changing update section
+ - Proposed change specification
+ - Move other sections to Effect and Interactions / Alternatives?
+
+
 Order of arguments to setField
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 `Proposal #158 <https://github.com/ghc-proposals/ghc-proposals/pull/158>`_
@@ -649,21 +656,86 @@ Consider instead the following definition::
 At first glance, this is somewhat surprising. It claims that if we know the
 field name ``x``, then knowledge of either ``s`` or ``t`` will allow the other
 type to be determined, regardless of the field type.  Morever, the field type
-``b`` can be determined from ``x`` and ``t``.  The strong functional
-dependencies mean that even examples like ``fun6`` are no problem, because there
-is no ambiguity.
+``b`` can be determined from ``x`` and ``t`` (and hence ``x`` and ``s``).  The
+strong functional dependencies mean that even examples like ``fun6`` are no
+problem, because there is no ambiguity.
 
-TODO: what goes wrong... and why it doesn't matter.
+But does this declaration even make sense? Any type-changing update will violate
+the functional dependency.  For example, GHC would not even allow us to define
+
+  instance SetFieldPoly "unTagged" (Tagged s a) (Tagged t b) b
+
+because it violates the liberal coverage condition.  So what goes wrong if we
+allow the constraint solver to solve such "dysfunctional" constraints anyway?
+
+First, some terminology:
+
+* **Termination** means that the constraint solving process finishes with a
+  result in finite time.
+
+* **Confluence** (as in term rewriting) means that, if a set of constraints A
+  can be simplified in two different ways to B or C, then there must be a common
+  set of constraints D such that both B and C can be simplified to D.  This
+  implies that the result of constraint solving does not depend on the order in
+  which constraints are tackled by the algorithm.
+
+* **Coherence** means that every possible solution to a set of constraints leads
+  to the same runtime behaviour of the programme.
+
+* **Consistency** means that there is no way to solve a constraint that entails
+  an equality between two distinct types, e.g. ``Int ~ Bool``.  This is an
+  essential prerequisite for **type soundness**.  Modulo bugs and explicitly
+  unsafe features such as ``unsafeCoerce``, GHC never allows consistency to be
+  violated, and indeed the constraint solver goes to some trouble to generate
+  evidence that can be checked by Core Lint, precisely to avoid inconsistency.
+
+The proposed "dysfunctional" behaviour should not affect consistency.  This is
+because functional dependencies do not carry evidence, i.e. even if we know both
+``[G] SetFieldPoly "x" s t ()`` and ``[G] SetFieldPoly "x" s u ()``, there is no
+way to conclude ``t ~ u``.  Instead, the functional dependencies work more like
+hints to the constraint solver: if it knows ``[G] SetFieldPoly "x" s t ()`` and
+is solving ``[W] SetFieldPoly "x" s u ()``, then it will try to solve ``[W] t ~
+u``.
+
+(Arguably it might be better if we had two separate features: true
+evidence-carrying functional dependencies, and some kind of more flexible "type
+inference hints" that could be used in the ``SetFieldPoly`` case.  See
+discussion in this direction on `ghc-proposals#374
+<https://github.com/ghc-proposals/ghc-proposals/pull/374>`_ and `ghc-proposals
+issue #391 <https://github.com/ghc-proposals/ghc-proposals/issues/391>`_.  But
+for the moment, users requiring true functional dependencies can encode them
+with type families, while those looking to give hints to the constraint solver
+already routinely (ab)use functional dependencies for this purpose.)
+
+In principle "dysfunctional dependencies" break confluence, however, and hence
+potentially coherence.  This is difficult to observe in practice, however.
+(TODO: would be nice to have a concrete example?)  But GHC's constraint solver
+is known to be non-confluent already (`#10675
+<https://gitlab.haskell.org/ghc/ghc/-/issues/10675>`_, `#18851
+<https://gitlab.haskell.org/ghc/ghc/-/issues/18851>`_) and the sky has not
+fallen in.  While users can discover confusing behaviour arising from
+non-confluence or incoherence if they try hard enough, it is not usually a
+problem that they stumble over accidentally.
 
 
+One unexpected consequence of this approach that users may encounter is that
+making type-changing updates to the same field more than once in a single
+definition may result in a type that is overly specific.  For example::
 
-TODO:
- - We need to decide what the functional dependencies on ``SetFieldPoly`` should be.
- - The "obvious" solution is not expressive enough and yet does not infer enough either.
- - The "dysfunctional" solution allows everything and seems to work nicely in practice,
-   although it violates principal types.
+  hmm v r = (setFieldPoly @"foo" v r, setFieldPoly @"foo" v r)
+  -- interim inferred type: alpha -> beta -> (gamma, delta)
+  -- constraints arising:  SetFieldPoly "foo" beta gamma alpha
+  --                       SetFieldPoly "foo" beta delta alpha
+  -- final inferred type:  SetFieldPoly "foo" s t b => b -> s -> (t, t)
+  -- most general type:    (SetFieldPoly "foo" s t b, SetFieldPoly "foo" s t' b) => b -> s -> (t, t')
 
-TODO: rewrite the following subsections
+Here the two wanted constraints lead to a functional dependency improvement
+``gamma ~ delta``. According to a strict reading of the functional dependency,
+the "most general" type is equivalent to the inferred type.  However, if
+"dysfunctional" solutions are allowed, the two types are distinguishable.
+
+
+TODO: break up the above and rewrite the following subsections
 
 
 Modifiable parameters and multiple updates
@@ -746,10 +818,6 @@ constraints to change phantom parameters.  In cases where this is necessary, the
 user can write a function that pattern matches on the data constructor (provided
 it is in scope!).
 
-
-TODO: perhaps we can drop the functional dependencies s b -> t, t a -> s?
- - only needed for avoiding ambiguity errors in composition?
- - alternative: for ambiguity check purposes, pretend we have s -> t and t -> s
 
 TODO: improve error messages in the set-with-wrong-type case!
 
@@ -1041,6 +1109,37 @@ call ``getField`` directly, and the use of a visible forall is strongly
 preferable, we propose to permit changing the types of ``getField``,
 ``setField`` and ``setFieldPoly`` to use visible dependent quantification if and
 when this is supported by GHC.
+
+
+Option: discouraging ``HasField`` abstraction, defaulting based on fields in scope
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In general, users will get the best results if ``HasField`` constraints are used
+as a mechanism for the compiler to resolve potentially-ambiguous field names
+internally within definitions, but not abstracted over to produce overloaded
+definitions.  This is not just about type inference, but about good design:
+having an interface that depends on ``HasField`` exposes too much about the
+implementation (namely the fields it accesses).  Moreover, field names in
+``HasField`` constraints are bare strings that do not carry any meaning.  Thus
+where abstracting over fields is necessary in an interface, users should be
+encouraged to do so explicitly (e.g. passing projection functions as arguments,
+or introducing a custom typeclass) rather than using ``HasField``.
+
+One option for discouraging excessive abstraction would be for GHC to refuse to
+generalise over inferred ``HasField`` constraints.  That is, unless the user
+explicitly wrote a type signature indicating that a definition should be
+polymorphic in ``HasField``, GHC would require the constraints to determine a
+record type and return an error if they did not.
+
+This could be combined with a defaulting step based on the fields currently in
+scope.  If there is an unsolved ``HasField "foo" s a`` constraint, and there is
+exactly one ``foo`` field in scope, the constraint solver could default ``s`` to
+be the type containing that field.  This would mean that code using traditional
+Haskell record updates would be less likely to be generalised (perhaps
+introducing ambiguity) when the ``OverloadedRecordUpdate`` extension was
+enabled, so it would make ``OverloadedRecordUpdate`` more backwards-compatible.
+However, it might surprise users that bringing a second ``foo`` field into scope
+would suddenly lead to unsolved constraints.
+
 
 
 Proposed Change Specification
