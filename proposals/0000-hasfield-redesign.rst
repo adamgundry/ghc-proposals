@@ -291,29 +291,29 @@ However, this is not enough if we want to allow type-changing update.  For examp
 
   data T a = MkT { f :: a }
 
-  fun :: T () -> T Int
-  fun t = setFieldPoly @"f" 0 t
-  -- constraint arising:  SetFieldPoly "f" (T ()) (T Int) alpha
+  fun1 :: T () -> T Int
+  fun1 t = setFieldPoly @"f" 0 t
+  -- constraints arising:  SetFieldPoly "f" (T ()) (T Int) alpha  (Num alpha)
 
-In this case the constraints to solve are ``Num alpha`` and
-``SetFieldPoly "f" (T ()) (T Int) alpha`` where ``alpha`` is a unification
-variable representing the type of the numeric literal ``0``.  Here the
-``SetFieldPoly`` constraint is easily solved as we do not require the type
-parameters for the two occurrences of ``T`` to be the same, and we do not need
-the field type to be determined.  Instead, we can see that the record type being
-updated is ``T``, and infer that the field type ``alpha`` from the constraint
-must match the actual type of the ``f`` field of ``T Int``, namely ``Int``.
+Here the ``SetFieldPoly`` constraint arises from the call to ``setFieldPoly``,
+and ``alpha`` is a unification variable representing the type of the numeric
+literal ``0``.  The ``SetFieldPoly`` constraint is easily solved as we do not
+require the type parameters for the two occurrences of ``T`` to be the same, and
+we do not need the field type to be determined.  Instead, we can see that the
+record type being updated is ``T``, and infer that the field type ``alpha`` from
+the constraint must unify with the actual type of the ``f`` field of ``T Int``,
+namely ``Int``.
 
 More interesting cases arise if we have partial type information::
 
   fun2 t = setFieldPoly @"f" 0 (t :: T ())
   -- interim inferred type:  T () -> beta
-  -- constraint arising:  SetFieldPoly "f" (T ()) beta alpha  (Num alpha)
+  -- constraints arising:  SetFieldPoly "f" (T ()) beta alpha  (Num alpha)
   -- final inferred type:  Num a => T () -> T a
 
   fun3 t = (setFieldPoly @"f" 0 t) :: T Int
   -- interim inferred type:  gamma -> T Int
-  -- constraint arising:  SetFieldPoly "f" gamma (T Int) alpha  (Num alpha)
+  -- constraints arising:  SetFieldPoly "f" gamma (T Int) alpha  (Num alpha)
   -- final inferred type:  T a -> T Int
 
 In each case the comment shows the ``SetFieldPoly`` constraint that arises.  We
@@ -341,7 +341,7 @@ simple cases of polymorphic updates are possible.
 However, things become more difficult if we try to *compose* polymorphic
 updates.  For example::
 
-  fun5 = setFieldPoly "g" True . setFieldPoly "f" ()
+  fun5 t = setFieldPoly "g" True . setFieldPoly "f" () $ t
   -- interim inferred type: beta -> delta
   -- constraints arising:  SetFieldPoly "f" beta gamma ()
   --                       SetFieldPoly "g" gamma delta Bool
@@ -375,7 +375,7 @@ Unfortunately, this functional dependency is not sufficient to handle the
 following example, where the field types are not uniquely determined, so ``t``,
 ``a`` and ``b`` are all ambiguous::
 
-  fun6 = setFieldPoly @"k" 0 . setFieldPoly @"h" []
+  fun6 t = setFieldPoly @"k" 0 . setFieldPoly @"h" [] $ t
   -- interim inferred type: beta -> delta
   -- constraints arising:  SetFieldPoly "h" beta gamma [alpha]
   --                       SetFieldPoly "k" gamma delta epsilon  (Num epsilon)
@@ -385,10 +385,10 @@ Nor can it handle examples where inference needs to proceed "in reverse" from
 the result type of the update to the type being updated, e.g. here ``s`` is
 ambiguous::
 
-  fun7 = setFieldPoly @"l" () undefined
-  -- interim inferred type: gamma
+  fun7 () = setFieldPoly @"l" () undefined
+  -- interim inferred type: () -> gamma
   -- constraints arising: SetFieldPoly "l" beta gamma ()
-  -- final inferred type:  SetFieldPoly "l" s t () => t
+  -- final inferred type:  SetFieldPoly "l" s t () => () -> t
 
 Not only does the functional dependency ``x s b -> t`` fail to determine enough
 type variables unambiguously, but also it is too restrictive, because it rules
@@ -397,99 +397,64 @@ record updates.  For example, this arises with phantom type parameters::
 
   data Tagged u w = Tagged { unTagged :: w }
 
+  -- with traditional Haskell records:
   phantomTypeChangingUpdate1 x = x { unTagged = unTagged x }
   -- inferred type: Tagged u w -> Tagged v w
-  -- with traditional Haskell records
 
+  -- with overloaded update:
   phantomTypeChangingUpdate2 x = setFieldPoly @"unTagged" (unTagged x) x
   -- interim inferred type: Tagged u beta -> gamma
   -- constraints arising:  SetFieldPoly "unTagged" (Tagged u beta) gamma beta
   -- final inferred type: SetFieldPoly "unTagged" (Tagged u w) (Tagged v w) w => Tagged u w -> Tagged v w
 
-Here we need to solve a constraint where the record type is known, but solving
-it would violate the ``x s b -> t`` functional dependency, because ``t = Tagged
-v w`` has an occurrence of ``v`` that is not determined by ``x = "unTagged"``,
-``s = Tagged u w``, ``b = w``.
+Here we have a constraint where the record type is known, but solving the
+constraint would violate the ``x s b -> t`` functional dependency, because ``t =
+Tagged v w`` has an occurrence of ``v`` that is not determined by ``x =
+"unTagged"``, ``s = Tagged u w``, ``b = w``.
 
 
 
-Dysfunctional dependencies to the rescue
-""""""""""""""""""""""""""""""""""""""""
-Consider instead the following definition::
+Dysfunctional constraint solving
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+We have seen that the ``x s b -> t`` functional dependency is both insufficient
+for good type inference, and yet rules out some type-changing updates.  How
+might we do better? Consider instead the following definition::
 
-  class SetFieldPoly x s t b | x s -> t, x t -> s b where
+  class SetFieldPoly x s t b | x s -> t b, x t -> s b where
     setFieldPoly :: b -> s -> t
 
 At first glance, this is somewhat surprising. It claims that if we know the
-field name ``x``, then knowledge of either ``s`` or ``t`` will allow the other
-type to be determined, regardless of the field type.  Morever, the field type
-``b`` can be determined from ``x`` and ``t`` (and hence ``x`` and ``s``).  The
+field name ``x``, then knowledge of either ``s`` or ``t`` will allow the field
+type and the other instantiation of the record type to be determined.  The
 strong functional dependencies mean that even examples like ``fun6`` are no
-problem, because there is no ambiguity.
+problem, because they are not considered ambiguous.
 
 But does this declaration even make sense? Any type-changing update will violate
-the functional dependency.  For example, GHC would not even allow us to define::
+the functional dependency, just like in the case of the phantom type-changing
+update discussed in the previous section.  For example, GHC would not normally
+allow us to define::
 
   instance SetFieldPoly "unTagged" (Tagged s a) (Tagged t b) b
 
-because it violates the liberal coverage condition.  So what goes wrong if we
-allow the constraint solver to solve such "dysfunctional" constraints anyway?
+because it violates the liberal coverage condition.
 
-First, some terminology:
+(In fact, it is currently possible to encode such instances, as described in
+`ghc-proposals#374 <https://github.com/ghc-proposals/ghc-proposals/pull/374>`_.
+That proposal suggests adding a pragma for the user to explicitly permit
+instances violating the functional dependency coverage condition.  Since in this
+proposal ``SetFieldPoly`` constraints are usually solved by the constraint
+solver directly rather than by looking at instances, adding such a pragma is
+independent of this proposal.)
 
-* **Termination**
-    The constraint solving process finishes with a result in finite time.
-
-* **Confluence**
-    If a set of constraints A can be simplified in two different ways to B or C,
-    then there must be a common set of constraints D such that both B and C can
-    be simplified to D.  This implies that the result of constraint solving does
-    not depend on the order in which constraints are tackled by the algorithm.
-
-* **Coherence**
-    Every possible solution to a set of constraints leads to the same runtime
-    behaviour of the programme.
-
-* **Consistency**
-    There is no way to solve a constraint that entails an equality between two
-    distinct types, e.g. ``Int ~ Bool``.  This is an essential prerequisite for
-    **type soundness**.  Modulo bugs and explicitly unsafe features such as
-    ``unsafeCoerce``, GHC never allows consistency to be violated, and indeed
-    the constraint solver goes to some trouble to generate evidence that can be
-    checked by Core Lint, precisely to avoid inconsistency.
-
-The proposed "dysfunctional" behaviour should not affect consistency.  This is
-because functional dependencies do not carry evidence, i.e. even if we know both
-``[G] SetFieldPoly "x" s t ()`` and ``[G] SetFieldPoly "x" s u ()``, there is no
-way to conclude ``t ~ u``.  Instead, the functional dependencies work more like
-hints to the constraint solver: if it knows ``[G] SetFieldPoly "x" s t ()`` and
-is solving ``[W] SetFieldPoly "x" s u ()``, then it will try to solve ``[W] t ~
-u``.
-
-(Arguably it might be better if we had two separate features: true
-evidence-carrying functional dependencies, and some kind of more flexible "type
-inference hints" that could be used in the ``SetFieldPoly`` case.  See
-discussion in this direction on `ghc-proposals#374
-<https://github.com/ghc-proposals/ghc-proposals/pull/374>`_ and `ghc-proposals
-issue #391 <https://github.com/ghc-proposals/ghc-proposals/issues/391>`_.  But
-for the moment, users requiring true functional dependencies can encode them
-with type families, while those looking to give hints to the constraint solver
-already routinely (ab)use functional dependencies for this purpose.)
-
-In principle "dysfunctional dependencies" break confluence, however, and hence
-potentially coherence.  This is difficult to observe in practice, however.
-(TODO: would be nice to have a concrete example?)  But GHC's constraint solver
-is known to be non-confluent already (`#10675
-<https://gitlab.haskell.org/ghc/ghc/-/issues/10675>`_, `#18851
-<https://gitlab.haskell.org/ghc/ghc/-/issues/18851>`_) and the sky has not
-fallen in.  While users can discover confusing behaviour arising from
-non-confluence or incoherence if they try hard enough, it is not usually a
-problem that they stumble over accidentally.
+So what goes wrong if we allow the constraint solver to solve such
+"dysfunctional" constraints anyway?
 
 
-One unexpected consequence of this approach that users may encounter is that
-making type-changing updates to the same field more than once in a single
-definition may result in a type that is overly specific.  For example::
+Principal types
+"""""""""""""""
+One consequence of this approach that users may encounter is that making
+type-changing updates to the same field more than once in a single definition
+may result in an inferred type that is overly specific.  For example::
 
   hmm v r = (setFieldPoly @"foo" v r, setFieldPoly @"foo" v r)
   -- interim inferred type: alpha -> beta -> (gamma, delta)
@@ -499,10 +464,113 @@ definition may result in a type that is overly specific.  For example::
   -- most general type:    (SetFieldPoly "foo" s t b, SetFieldPoly "foo" s t' b) => b -> s -> (t, t')
 
 Here the two wanted constraints lead to a functional dependency improvement
-``gamma ~ delta``. According to a strict reading of the functional dependency,
-the "most general" type is equivalent to the inferred type.  However, if
+``gamma ~ delta``, so the inferred type has a single ``SetFieldPoly``
+constraint.  However, the most general (principal) type has two ``SetFieldPoly``
+constraints. According to the usual reading of the functional dependency, the
+most general type is equivalent to the inferred type.  However, if
 "dysfunctional" solutions are allowed, the two types are distinguishable.
 
+While it would be preferable if GHC always inferred principal types, there are
+already situations in which type signatures may give a more general type than
+the inferred type.  This does not seem likely to be a big problem in practice,
+and the inferred type is simpler for users to understand.
+
+
+Consistency and type soundness
+""""""""""""""""""""""""""""""
+**Consistency** requires that there is no way to solve a constraint that entails
+an equality between two distinct types, e.g. ``Int ~ Bool``.  This is an
+essential prerequisite for type soundness.  Modulo bugs and explicitly unsafe
+features such as ``unsafeCoerce``, GHC never allows consistency to be violated,
+and indeed the constraint solver goes to some trouble to generate evidence that
+can be checked by Core Lint, precisely to avoid inconsistency.
+
+The proposed "dysfunctional" behaviour will not affect consistency or type
+soundness.  This is because functional dependencies do not carry evidence,
+i.e. even if we know both ``[G] SetFieldPoly "x" s t ()`` and ``[G] SetFieldPoly
+"x" s u ()``, there is no way to conclude ``t ~ u``.  Instead, the functional
+dependencies work more like hints to the constraint solver: if it knows ``[G]
+SetFieldPoly "x" s t ()`` and is solving ``[W] SetFieldPoly "x" s u ()``, then
+it will try to solve ``[W] t ~ u``.
+
+Accepting dysfunctional dependencies does rule out modifying the implementation
+to carry evidence, e.g. using type families, as described in `Elaboration on
+Functional Dependencies (Karachalias and Schrijvers, 2017)
+<https://core.ac.uk/download/pdf/129864823.pdf>`_.  However, requiring evidence
+would affect a significant amount of existing code that relies on (ab)using
+functional dependencies as a flexible mechanism for type inference improvements.
+Thus it would be necessary to retain some mechanism for such "type inference
+hints" in any case, and this mechanism could be used for ``SetFieldPoly``.  For
+the moment, users requiring true functional dependencies can manually encode
+them with type families already.  (See related discussion on `ghc-proposals#374
+<https://github.com/ghc-proposals/ghc-proposals/pull/374>`_ and `ghc-proposals
+issue #391 <https://github.com/ghc-proposals/ghc-proposals/issues/391>`_.)
+
+
+Confluence
+""""""""""
+**Confluence** requires that if a set of constraints A can be simplified in two
+different ways to B or C, then there must be a common set of constraints D such
+that both B and C can be simplified to D.  This implies that whether or not
+constraint solving succeeds does not depend on the order in which constraints
+are tackled by the algorithm.
+
+In principle "dysfunctional dependencies" break confluence.  For example,
+consider the following set of constraints::
+
+  beta  ~ Tagged Int  ()
+  gamma ~ Tagged Char ()
+  SetFieldPoly "unTagged" alpha beta  ()
+  SetFieldPoly "unTagged" alpha gamma ()
+
+One constraint solver strategy (the one GHC uses) is to simplify equality
+constraints first, giving::
+
+  SetFieldPoly "unTagged" alpha (Tagged Int  ()) ()
+  SetFieldPoly "unTagged" alpha (Tagged Char ()) ()
+
+These can then be solved by setting ``alpha := Tagged delta epsilon``.
+
+However, starting from the same original set of constraints, if the constraint
+solver began by applying the functional dependencies to conclude ``beta ~
+gamma``, it would then hit the unsolvable constraint ``Int ~ Char``.
+
+GHC's constraint solver is known to be non-confluent already (`#10675
+<https://gitlab.haskell.org/ghc/ghc/-/issues/10675>`_, `#18851
+<https://gitlab.haskell.org/ghc/ghc/-/issues/18851>`_) and the sky has not
+fallen in.  While users can discover confusing behaviour arising from
+non-confluence if they try hard enough, it is not usually a problem that they
+stumble over accidentally.  GHC's strategy of trying to solve equality and class
+constraints as much as possible first, then seeing if more information can be
+gained from functional dependencies, seems to work well in practice.
+
+
+Coherence
+"""""""""
+**Coherence** requires that every possible solution to a set of constraints
+(potentially in different modules, with different instances in scope) leads to
+the same runtime behaviour of the programme.  GHC attempts to achieve coherence
+for type class instances, but users can bypass this (e.g. with ``INCOHERENT``
+pragmas).  Some constraints, e.g. implicit parameters, are never assumed to be
+coherent.
+
+This is difficult to observe in practice, however.
+(TODO: would be nice to have a concrete example?)
+
+
+Termination of constraint solving
+"""""""""""""""""""""""""""""""""
+**Termination** requires that the constraint solving process yields a result in
+finite time.  In general termination checking is difficult, so termination of
+the constraint solver is not guaranteed if the user enables
+``UndecidableInstances`` and writes a looping type-level program.
+
+We do not believe that the constraint solver behaviour proposed here will lead
+to non-termination.  While the encoding trick used to write dysfunctional
+instances in current GHC versions uses cyclic instances, those are an artefact
+of the encoding and would not be part of a real implementation of
+``SetFieldPoly`` or of dysfunctional instances per `ghc-proposals#374
+<https://github.com/ghc-proposals/ghc-proposals/pull/374>`_.
 
 
 Should ``OverloadedRecordUpdate`` use type-changing update?
