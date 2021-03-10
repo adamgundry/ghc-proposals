@@ -208,7 +208,7 @@ point is deferred to subsequent sections.
   now restricted to be ``Symbol``.
 
 The main changes from the design in `proposal #158
-  <https://github.com/ghc-proposals/ghc-proposals/pull/158>`_ are:
+<https://github.com/ghc-proposals/ghc-proposals/pull/158>`_ are:
 
 * The ``getField`` and ``setField`` operations belong to two independent
   classes, rather than both being definable from a single method in a single
@@ -601,6 +601,7 @@ several alternative possibilities:
     cannot be supported be ``SetFieldPoly``.
 
 * Introduce new syntax to distinguish type-changing from non-type-changing updates.
+    This would be possible, but seems under-motivated.
 
 * Introduce new syntax for performing an update while specifying the type being updated.
     See `proposal #310 <https://github.com/ghc-proposals/ghc-proposals/pull/310>`_.
@@ -618,8 +619,9 @@ updates explicitly (e.g. replacing ``t { foo = True }`` with ``case t of MkT{..}
 -> MkT{foo=True, ..}``) or use an optics library.
 
 Given the availability of these workarounds, and the greater simplicity and
-predictability, we propose that ``OverloadedRecordUpdate`` will not permit
-type-changing updates, as agreed in previous proposals.
+predictability, we propose that ``OverloadedRecordUpdate`` **will not** permit
+type-changing updates, as agreed in previous proposals.  Feedback from the
+community and steering committee is particularly sought on this point, however.
 
 
 
@@ -691,37 +693,17 @@ follows::
 
   -- | If there is a field @x@ in the record type @r@, returns the type of the
   -- field.  The field must have a simple type of kind 'Type' (i.e. it may not
-  -- be higher-rank, existential or unboxed).
+  -- be higher-rank, existential or unlifted).
   type family FieldType (x :: Symbol) (r :: Type) :: Type
 
-To summarise the changes relative to the previously-accepted `proposal #158
-<https://github.com/ghc-proposals/ghc-proposals/pull/158>`_:
+See the `Design highlights`_ for a brief summary of the changes in this design
+relative to the previously-accepted `proposal #158
+<https://github.com/ghc-proposals/ghc-proposals/pull/158>`_.  There are many
+possible alternative choices of detail here, which are explored in the
+`Alternatives`_ section.
 
-* The ``HasField`` class has been renamed to ``GetField``.  In its place there
-  is a new ``HasField`` constraint synonym for the pair of constraints
-  ``GetField`` and ``SetField``.
-
-* ``SetField`` is now a constraint synonym for ``SetFieldPoly``, a new class
-  that permits type-changing update.  A new ``HasFieldPoly`` constraint synonym
-  permits both field selection and type-changing update.
-
-* The ``setField`` function now takes the field value first, followed by the
-  record value.
-
-* The classes are polymorphic in the runtime representation of the field type,
-  allowing support for `Unlifted fields`_. Standalone kind signatures and
-  explicit specificity annotations are used to make this polymorphism explicit.
-
-* The classes are no longer polymorphic in the kind of field labels. This is now
-  restricted to be ``Symbol``.
-
-* A new ``FieldType`` type family makes it possible to look up the type of a
-  field.
-
-TODO: merge with other list
-
-TODO: say somewhere that ``OverloadedRecordUpdate`` will change the order of the
-arguments in calls to ``setField``, including with ``RebindableSyntax``.
+The follow sections specify the behaviour of the constraint solver for the
+definitions in this module.
 
 
 Solving ``GetField`` constraints
@@ -738,22 +720,26 @@ constraint solver when the following hold:
 
 * ``f`` is a type-level symbol ``"foo"``.
 
-* ``r`` is an application of a record type ``R`` to some arguments ``t0 ... tn``.
+* ``r`` is an application of a record type ``R`` to some arguments ``t_0
+  ... t_n``.
 
-* The record type ``R x0 ... xn`` has a field ``foo`` (of some type ``u[x0,...,xn]``).
+* The record type ``R x_0 ... x_n`` has a field ``foo``, which is in scope
+  according to the usual module scope rules.
 
-* The field ``foo`` is in scope, according to the usual module scope rules.
-
-* The actual field type ``u[x0,...,xn]`` does not refer to any
+* The type ``u[x_0, ..., x_n]`` of the field ``foo`` does not refer to any
   existentially-quantified type variables or contain any universal quantifiers.
 
 If the wanted field type ``a`` is apart from the actual field type
-``u[x0,...,xn]``, the constraint solver will reject the constraint as insoluble
-(with an appropriate error message).  Otherwise, the constraint solver will
-discharge the original constraint, and emit new constraints:
+``u[t_0/x_0, ..., t_n/x_n]``, the constraint solver will reject the constraint as
+insoluble with an appropriate error message.  (This is new; existing GHC
+versions simplify the constraint anyway, then yield an insoluble equality
+constraint.)
 
-* ``a ~ u[t0/x0,...,tn/xn]`` (equating the type from the wanted with the actual
-  type of the field);
+Otherwise, the constraint solver will discharge the original constraint, and
+emit new constraints:
+
+* ``a ~ u[t_0/x_0, ..., t_n/x_n]`` (equating the type from the wanted with the
+  actual type of the field);
 
 * TODO: something about GADTs;
 
@@ -761,20 +747,18 @@ discharge the original constraint, and emit new constraints:
   if there is one.
 
 If the field is partial, and the new ``-Wincomplete-record-selectors`` flag is
-enabled, a warning will be emitted.
+enabled, a warning will be emitted.  (TODO: introduce this warning first?)
 
 Note that:
 
 * If ``R`` is a data family, it is considered a record type iff there is an
-  instance of the family for ``R t0 ... tn`` that is defined as a record.
+  instance of the family for ``R t_0 ... t_n`` that is defined as a record.
 
 * Solving the equation between the wanted and actual field types will fill in
   the inferred parameter ``l :: RuntimeRep`` with the appropriate
   representation.  This means support for unlifted fields is automatic.
 
 TODO: explain when manual GetField instances are permitted.
-
-TODO: discuss improving error messages in the set-with-wrong-type case!
 
 
 Solving ``SetFieldPoly`` constraints
@@ -789,50 +773,62 @@ be solved automatically iff ``GetField f r a`` is solved automatically.
 
 TODO: update the following
 
-A wanted constraint ``SetFieldPoly f s t a b`` will be solved automatically by
+A wanted constraint ``SetFieldPoly f s t b`` will be resolved automatically by
 GHC's constraint solver when the following hold:
 
 * ``f`` is a type-level symbol ``"foo"``.
 
-* At least one of ``s`` or ``t`` is an application of a record type ``R`` to
-  some arguments ``t_0 ... t_n``.
+* At least one of ``s`` or ``t`` is an application of a record type ``R``.
 
-* The record type ``R x_0 ... x_n`` has a field ``foo`` (of some type ``u[x_0, ..., x_n]``).
+* The record type ``R x_0 ... x_n`` has a field ``foo``, which is in scope
+  according to the usual module scope rules.
 
-* The field ``foo`` is in scope, according to the usual module scope rules.
+* The type ``u[x_0, ..., x_n]`` of the field ``foo`` does not refer to any
+  existentially-quantified type variables or contain any universal quantifiers.
 
-* The field type ``u[x_0, ..., x_n]`` does not refer to any existentially-quantified
-  type variables or contain any universal quantifiers.
+If ``t = R t_0 ... t_n`` for some ``t_0 ... t_n``:
 
-Definition: a type parameter ``x_i`` of the record type ``R x_0 ... x_n`` is
-*modifiable* if:
+* Let ``s_i = t_i`` if ``x_i`` occurs in the type of a field other than ``foo``,
+  or ``s_i = alpha_i`` for fresh unification variables ``alpha_i`` otherwise.
 
-* it occurs in the type ``u[x0, ..., xn]`` of the field ``foo``;
+* If the wanted field type ``b`` is apart from the actual field type
+  ``u[t_0/x_0, ..., t_n/x_n]``, the constraint solver will reject the constraint
+  as insoluble with an appropriate error message.
 
-* at least one of the occurrences is rigid (i.e. not under a type family); (TODO: define more precisely)
+* Otherwise, the constraint solver will discharge the original constraint, and
+  emit new constraints as follows:
 
-* it does not occur in the type of any other field.
+  * ``s ~ R s_0 ... s_n``;
 
-Suppose without loss of generality that ``t = R t_0 ... t_n`` (otherwise
-interchange ``s`` and ``t``, noting that if both ``s`` and ``t`` are already
-applications of ``R`` then the constraints are equivalent in either order).
+  * ``b ~ u[t_0/x_0, ..., t_n/x_n]``;
 
-In this case, the constraint solver will discharge the original constraint, and
-emit new constraints as follows.
+  * TODO: something about GADTs;
 
-* ``s ~ R s_0 ... s_n`` where ``s_i = alpha_i`` for a fresh unification variable
-  ``alpha_i`` if ``x_i`` is modifiable, or ``s_i = t_i`` otherwise;
+  * any constraints from the datatype context (defined with
+  ``DatatypeContexts``), if there is one.
 
-* ``a ~ u[s_0/x_0, ..., s_n/x_n]``;
+Otherwise, if ``s = R s_0 ... s_n`` for some ``s_0 ... s_n``:
 
-* ``b ~ u[t_0/x_0, ..., t_n/x_n]``;
+* Let ``t_i = s_i`` if ``x_i``  occurs in the type of a field other than ``foo``,
+  or ``t_i = alpha_i`` for fresh unification variables ``alpha_i`` otherwise.
 
-* TODO: something about GADTs;
+* If the wanted field type ``b`` is apart from the actual field type
+  ``u[t_0/x_0,...,t_n/x_n]``, the constraint solver will reject the constraint
+  as insoluble with an appropriate error message.
 
-* any constraints from the datatype context (defined with ``DatatypeContexts``),
-  if there is one.
+* Otherwise, the constraint solver will discharge the original constraint, and
+  emit new constraints as follows:
 
-If the field is partial, and the ``-Wincomplete-record-updates`` flag is
+  * ``s ~ R s_0 ... s_n``;
+
+  * ``b ~ u[t_0/x_0, ..., t_n/x_n]``;
+
+  * TODO: something about GADTs;
+
+  * any constraints from the datatype context (defined with
+  ``DatatypeContexts``), if there is one.
+
+If the field ``foo`` is partial, and the ``-Wincomplete-record-updates`` flag is
 enabled, a warning will be emitted.
 
 TODO: explain when manual SetFieldPoly instances are permitted?
@@ -841,7 +837,45 @@ TODO: explain when manual SetFieldPoly instances are permitted?
 Reducing the ``FieldType`` type family
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-TODO: specify
+An application of the type family ``FieldType f r`` will be reduced
+automatically if the following hold:
+
+* ``f`` is a type-level symbol ``"foo"``.
+
+* ``r`` is an application of a record type ``R`` to some arguments ``t_0
+  ... t_n``.
+
+* The record type ``R x_0 ... x_n`` has a field ``foo``, which is in scope
+  according to the usual module scope rules.
+
+* The type ``u[x_0, ..., x_n]`` of the field ``foo`` does not refer to any
+  existentially-quantified type variables or contain any universal quantifiers,
+  and has kind ``Type`` (i.e. it is not unlifted).
+
+In this case, ``FieldType "foo" (R t_0 ... t_n)`` will reduce to
+``u[t_0/x_0, ..., t_n/x_n]``.
+
+TODO: explain when manual FieldType instances are permitted?
+
+
+Changes to ``OverloadedRecordUpdate``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The `Order of arguments to setField`_ has been changed so that the field value
+comes first, followed by the record value.  Correspondingly, the
+``OverloadedRecordUpdate`` extension will be changed so that it calls
+``setField`` with the arguments in the same order:
+
+======================= ================================== ==================================
+Expression              Previous interpretation            New interpretation
+======================= ================================== ==================================
+``e{lbl = val}``        ``setField @"lbl" e val``          ``setField @"lbl" val e``
+======================= ================================== ==================================
+
+This includes the case where ``RebindableSyntax`` is enabled, so ``setField``
+refers to whichever name is in scope, rather than to ``GHC.Records.setField``.
+While this is a breaking change, the support for ``OverloadedRecordUpdate`` in
+GHC 9.2 was explicitly advertised as experimental, so this should not
+inconvenience users unexpectedly.
 
 
 Flags for compile-time performance control
@@ -894,6 +928,7 @@ build time even if the original author of a library being compiled did not
 consider the need for the flag; thus we do not require a pragma in the source
 file containing the datatype definition.
 
+TODO: bring this back together with ``-fno-generate-record-selectors``.
 
 
 Examples
@@ -1017,6 +1052,8 @@ discussion of `Pattern synonyms`_ below).
 Splitting ``HasField`` into separate ``GetField`` and ``SetField`` classes means
 it is possible to define get-only or set-only virtual fields.
 
+TODO: explore ``FieldType`` implications
+
 
 Pattern synonyms
 ~~~~~~~~~~~~~~~~
@@ -1051,7 +1088,8 @@ instances, as in the ``Maybe`` example), the type need not even be a record, and
 multiple pattern synonyms may define conflicting fields for the same type.
 
 TODO: perhaps we should revisit this, and only report errors if we actually hit
-ambiguity when solving?
+ambiguity when solving?  This could lead to incoherence, but perhaps that
+doesn't matter.  It also wouldn't work with ``FieldType``.
 
 
 Modifiable parameters and multiple updates
@@ -1155,9 +1193,9 @@ happily ignore the ``GHC.Records`` module and record dot syntax extensions.
 Alternatives
 ------------
 There are many alternative designs possible for ``HasField`` and related
-classes, which is part of the reason progress in this area has been slow.  The
-`Design questions`_ section above attempts a detailed discussion of each
-individual design choice, but there are many minor variations possible.
+classes, which is part of the reason progress in this area has been slow.  This
+proposal attempts a detailed discussion of each individual design choice, but
+there are many minor variations possible.
 
 * `Proposal #158 <https://github.com/ghc-proposals/ghc-proposals/pull/158>`_
   used a design with a single ``HasField`` class, no type-changing update,
@@ -1190,8 +1228,7 @@ Another possible approach is to abandon ``HasField`` as a solution to the
 
 * `Proposal #310 <https://github.com/ghc-proposals/ghc-proposals/pull/310>`_
   suggests adding a syntax for record update that would explicitly specify the
-  type, thereby avoiding the need for type-directed field resolution.  However,
-  this conflicts with the (accepted) ``RecordDotSyntax`` proposal.
+  type, thereby avoiding the need for type-directed field resolution.
 
 Subsequent subsections discuss alternative choices for particular aspects of the
 design recommended by this proposal.
@@ -1434,13 +1471,19 @@ record types are assumed to have a ``Generic`` instance.  However, this does not
 allow for the scope of fields to be controlled, and is likely to be less
 efficient than providing built-in support for ``FieldType``.
 
-Strictly speaking the restriction to boxed types is probably unnecessary,
+Strictly speaking the restriction to lifted types is probably unnecessary,
 because we could define::
 
   type family FieldRep  (x :: Symbol) (r :: Type) :: RuntimeRep
   type family FieldType (x :: Symbol) (r :: Type) :: TYPE (FieldRep x r)
 
 This seems unreasonably complex, however.
+
+TODO: maybe don't bother with FieldType?
+ - won't work with pattern synonyms due to inconsistency
+ - more limited for unlifted
+ - unclear how compelling use cases
+ - can mostly work around with generics
 
 
 Higher-rank fields
