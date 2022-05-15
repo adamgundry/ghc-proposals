@@ -12,28 +12,51 @@ Proposal title
 .. contents::
 
 In the `overloaded record fields proposal
-<https://github.com/ghc-proposals/ghc-proposals/blob/master/proposals/0023-overloaded-record-fields.rst>,
+<https://github.com/ghc-proposals/ghc-proposals/blob/master/proposals/0023-overloaded-record-fields.rst>`_,
 there is a `set of limitations
-<https://github.com/ghc-proposals/ghc-proposals/blob/master/proposals/0023-overloaded-record-fields.rst#virtual-record-fields>`
+<https://github.com/ghc-proposals/ghc-proposals/blob/master/proposals/0023-overloaded-record-fields.rst#virtual-record-fields>`_
 as to when a user can declare custom ``HasField`` instances. In this proposal
-these restrictions, allowing users to define ``HasField`` instances even when
-the original data type has fields.
+we relax these restrictions, allowing users to define ``HasField`` instances
+when they were previously unable to.
 
 Motivation
 ----------
-The current conditions prohibit a user from defining ``HasField`` instances if
-the type in question has fields defined. This restriction is in place to
-guarantee coherence, but is very restrictive. In this section, we will consider
+The current conditions prohibit a user from defining ``HasField`` custom
+instances under a few conditions. This proposal argues that these constraints
+are excessively restrictive and that GHC would benefit from relaxing these
+constraints.
+
+These conditions can be found in the `"Virtual record fields" section of
+proposal 0023
+<https://github.com/ghc-proposals/ghc-proposals/blob/master/proposals/0023-overloaded-record-fields.rst#virtual-record-fields>`,
+and these conditions are:
+
+  * ``HasField _ r _`` where ``r`` is a variable;
+
+  * ``HasField _ (T ...) _`` if ``T`` is a data family (because it might have
+    fields introduced later, using data instance declarations);
+
+  * ``HasField x (T ...) _`` if ``x`` is a variable and ``T`` has any fields at
+    all (but this instance is permitted if ``T`` has no fields);
+
+  * ``HasField "foo" (T ...) _`` if ``T`` has a field ``foo`` (but this instance
+    is permitted if it does not).
+
+These restrictions are in place to guarantee coherence, but come at the cost of
+ruling out a variety of productive instances. In this section, we will consider
 a few examples of where we might wish to add fields, but are currently denied
 this opportunity.
 
-First, consider the newtype::
+Example 1
+~~~~~~~~~
+
+Consider the newtype::
 
   newtype Behavior a = Behavior { unB :: ... }
 
 This type represents a time-varying value, and occurs in the
 ``reactive-banana`` project. A ``Behavior`` is a ``Functor``, and it would be
-quite nice if we could "lift" any fields in ``a`` to ``Behavior a``::
+nice if we could "lift" any fields in ``a`` to ``Behavior a``::
 
   instance HasField x a b => HasField (x :: k) (Behavior a) b where
     getField b = getField @x <$> b
@@ -42,29 +65,16 @@ Unfortunately, because ``Behavior`` was defined as ``{ unB :: ... }``, GHC
 considers it to have fields, and we are unable to write the ``HasField``
 instance we want. Worse, this is an abstraction leak - users of
 ``reactive-banana`` can only see ``data Behavior a`` - its constructor and
-fields are not exported.
+fields are not exported. This leads to a confusing error message if a user
+tries to define the above custom (orphan) instance, as they are told the type
+has fields, though without reading the source they are otherwise unable to
+observe that.
 
 TODO: More motivating examples.
 
 Proposed Change Specification
 -----------------------------
-The list of reasons to prevent a ``HasField`` instance from being defined is
-redefined as:
-
- * ``HasField _ r _`` where ``r`` is a variable;
-
- * ``HasField _ (T ...) _`` if ``T`` is a data family (because it
-   might have fields introduced later, using data instance declarations);
-
- * ``HasField "foo" (T ...) _`` if ``T`` has a field ``foo`` (but this
-   instance is permitted if it does not).
-
-That is,
-
- * ``HasField x (T ...) _`` if ``x`` is a variable and ``T`` has any
-   fields at all (but this instance is permitted if ``T`` has no fields);
-
-is removed from the list of restrictions.
+All four restrictions are removed.
 
 Examples
 --------
@@ -85,14 +95,16 @@ The minmial implementation cost should simply remove some code, so in one sense
 this change is a simplification. However, the implementation cost may latter
 rise if we want to provide more informative error messages. For now, it's
 suggested that we just emit the traditional overlapping instances error
-message.
+messages.
 
-A drawback of this proposal is that now allows users to experience incoherence
-in field resolution. TODO: Expand on/emphasise this?
+A perhaps more significant cost/drawback of this proposal is that it permits
+record fields to be incoherent.
+
+TODO Expand on/emphasise this
 
 Alternatives
 ------------
-TODO: What are the alternatives?
+Rather than relaxing all four restrictions at once, we could instead remove restrictions as requested. Such a strategy may lead to smaller changes, but on the other hand may lead to more changes. Perhaps it is better to make sweeping changes to a new feature while it's settling, rather than having developers try and develop against a moving target.
 
 Unresolved Questions
 --------------------
@@ -104,10 +116,4 @@ Ollie Charles has offered to help implement this proposal if it is accepted.
 
 Endorsements
 -------------
-(Optional) This section provides an opportunity for any third parties to express their
-support for the proposal, and to say why they would like to see it adopted.
-It is not mandatory for have any endorsements at all, but the more substantial
-the proposal is, the more desirable it is to offer evidence that there is
-significant demand from the community.  This section is one way to provide
-such evidence.
 
