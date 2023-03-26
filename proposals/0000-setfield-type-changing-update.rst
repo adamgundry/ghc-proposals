@@ -20,7 +20,9 @@ that is separate from the existing ``HasField`` typeclass.  For background on
 overloaded record fields and ``SetField``, please refer to that proposal.
 
 TODO: This needs reworking once the above proposal stabilises, to make sure it
-uses the final design.
+uses the final design.  In particular, it is not yet completely consistent
+whether the proposed ``SetField`` class has parameters ``x s t b`` (defining
+``setField``) or ``x s t a b`` (defining ``modifyField``).
 
 
 Motivation
@@ -43,17 +45,20 @@ The ``SetField`` class will provide a mechanism for updating fields where the
 record type is determined by type inference, like this::
 
   class SetField x r a | x r -> a where
-    setField :: a -> r -> r
+    modifyField :: (a -> a) -> r -> r
+
+  setField :: SetField x r a => a -> r -> r
+  setField = modifyField . const
 
 This is intended for use either with the ``OverloadedRecordUpdate`` extension,
 which provides syntactic sugar for calls to ``setField``, or with a lens/optics
 library.  For example, the ``optics`` package can automatically use
-``OverloadedLabels`` as lenses using ``getField`` and ``setField`` (with the
+``OverloadedLabels`` as lenses using ``getField`` and ``modifyField`` (with the
 latter currently implemented using generic programming, in the absence of
 built-in support).
 
 However, this design does not permit type-changing updates, because it defines a
-setter operation ``setField :: SetField x r a => a -> r -> r`` where the input
+setter operation ``modifyField :: SetField x r a => (a -> a) -> r -> r`` where the input
 and output record types must both be ``r``.  This has the significant merit of
 simplicity, because type inference has more information to work with, and there
 is no need to specify under which circumstances type-changing updates are
@@ -68,10 +73,13 @@ In the light of this, we propose adding support for type-changing update to the
 ``setField`` that permits type-changing update and a function ``setField'``
 that specialises it to the case when type-changing update is not available::
 
-  class SetField x s t b | ... where
-    setField :: b -> s -> t
+  class SetField x s t a b | ... where
+    modifyField :: (a -> b) -> s -> t
 
-  type SetField' x r a = SetField x r r a
+  type SetField' x r a = SetField x r r a a
+
+  setField :: forall x s t a b . SetField x s t a b => b -> s -> t
+  setField = modifyField . const
 
   setField' :: forall x r a . SetField' x r a => a -> r -> r
   setField' = setField @x
@@ -90,6 +98,8 @@ This leaves open two questions:
 
 The challenge of type inference for ``SetField`` constraints
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+TODO: the following needs updating with the extra ``a`` parameter to ``SetField``!
+
 For a ``HasField`` constraint, the constraint solver will automatically solve a
 constraint like ``HasField "f" (T a b c) ty`` when ``T`` is a record datatype
 with a field ``f`` in scope.  That is, given a constraint ``HasField x r a``
@@ -176,14 +186,16 @@ The usual solution to such ambiguity problems would be to introduce functional
 dependencies between the parameters of the typeclass, e.g. previous designs for
 type-changing update have used something like::
 
-  class SetField x s t b | x t -> b, x s b -> t where
-    setField :: b -> s -> t
+  class SetField x s t a b | x s -> a, x t -> b, x s b -> t, x t a -> s where
+    modifyField :: (a -> b) -> s -> t
 
 Here the functional dependency ``x s b -> t`` asserts that the field name ``x``,
 input record type ``s`` and new field type ``b`` can be used to determine the
 output record type ``t``.  This would mean ``fun5`` was accepted without
 ambiguity, because the functional dependency can be used to determine ``t`` from
-``"f"``, ``s`` and ``()`` in ``SetField "f" s t ()``.
+``"f"``, ``s`` and ``()`` in ``SetField "f" s t a ()``.
+
+TODO: the following needs updating with the extra ``a`` parameter to ``SetField``!
 
 Unfortunately, this functional dependency is not sufficient to handle the
 following example, where the field types are not uniquely determined, so ``t``,
@@ -240,7 +252,7 @@ instantiation of the record type to be determined.  This is clearly not true if
 type-changing updates are permitted.  For example, GHC would not normally allow
 us to define::
 
-  instance SetField "unTagged" (Tagged s a) (Tagged t b) b
+  instance SetField "unTagged" (Tagged s a) (Tagged t b) a b
 
 because it would violate the liberal coverage condition.
 
@@ -261,7 +273,8 @@ Changes to ``GHC.Records``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The definitions of ``SetField`` and ``Field`` in ``GHC.Records`` (according to
-proposal TODO) are replaced with the following (``HasField`` is unchanged)::
+`proposal #583 <https://github.com/ghc-proposals/ghc-proposals/pull/583>`_) are
+replaced with the following (``HasField`` is unchanged)::
 
   -- | Constraint representing the fact that a field @x@ of type @a@ can be
   -- updated in the record type @s@, producing a record of type @t@.
@@ -272,16 +285,19 @@ proposal TODO) are replaced with the following (``HasField`` is unchanged)::
   -- Where a 'HasField' instance is available alongside an instance of this
   -- class, they must satisfy the laws defined on 'Field'.
   --
-  type SetField :: forall {k} {s_rep} {t_rep} {b_rep} . k -> TYPE s_rep -> TYPE t_rep -> TYPE b_rep -> Constraint
-  class SetField x s t b | x t -> b where
+  type SetField :: forall {k} {s_rep} {t_rep} {a_rep} {b_rep} . k -> TYPE s_rep -> TYPE t_rep -> TYPE a_rep -> TYPE b_rep -> Constraint
+  class SetField x s t a b | x s -> a, x t -> b where
     -- | Update function to set the field @x@ in the record @s@.  Permits
     -- type-changing update.
-    setField :: b -> s -> t
+    modifyField :: (a -> b) -> s -> t
 
   -- | Constraint representing the fact that a field @x@ of type @a@ can be
   -- selected from the record type @r@.
   type SetField' :: forall {k} {r_rep} {a_rep} . k -> TYPE r_rep -> TYPE a_rep -> Constraint
-  type SetField' x r a = SetField x r r a
+  type SetField' x r a = SetField x r r a a
+
+  setField :: forall {k} {s_rep} {t_rep} {a_rep} {b_rep} (x :: k) (s :: TYPE s_rep) (t :: TYPE t_rep) (a :: TYPE a_rep) (b :: TYPE b_rep) . SetField x s t a b => b -> s -> t
+  setField = modifyField . const
 
   -- | Update function to set the field @x@ in the record @r@.  Does not permit
   -- type-changing update.
@@ -304,13 +320,13 @@ proposal TODO) are replaced with the following (``HasField`` is unchanged)::
   -- > setField @x (getField @x r) r === r
   --
   type Field :: forall {k} {s_rep} {t_rep} {a_rep} {b_rep} . k -> TYPE s_rep -> TYPE t_rep -> TYPE a_rep -> TYPE b_rep -> Constraint
-  type Field x s t a b = (HasField x s a, HasField x t b, SetField x s t b)
+  type Field x s t a b = (HasField x s a, HasField x t b, SetField x s t a b)
 
 
 
 Solving ``SetField`` constraints
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-A wanted constraint ``SetField x s t b`` will be resolved automatically by
+A wanted constraint ``SetField x s t a b`` will be resolved automatically by
 GHC's constraint solver when the following hold:
 
 * ``x`` is a type-level symbol ``"foo"``.
@@ -320,17 +336,17 @@ GHC's constraint solver when the following hold:
 * The record type ``R`` has a field ``foo``, and this field is in scope
   according to the usual module scope rules (qualified or unqualified).
 
-* The updater function ``\ (v :: b) (r :: s) -> r { foo = v } :: t`` is
+* The updater function ``\ (f :: a -> b) (r :: s) -> r { foo = f (foo r) } :: t`` is
   well-typed modulo some new constraints *Cs*.
 
 * There are no user-defined ``SetField`` instances that overlap with ``SetField
-  "foo" (R ...) (R ...) b``.
+  "foo" (R ...) (R ...) a b``.
 
 In the updater function , ``foo`` is taken to unambiguously reference the field
 of ``R``, regardless of what else may be in scope. That is, the use of ``r { foo
-= v }`` in the updater function should be interpreted as syntactic sugar for a
+= f (foo v) }`` in the updater function should be interpreted as syntactic sugar for a
 case expression, e.g. if ``R`` has a single constructor ``MkR``, it will desugar
-to ``case r of MkR{..} -> MkR{foo = v, ..}``.
+to ``case r of MkR{foo=x, ..} -> MkR{foo = f x, ..}``.
 
 Any new constraints *Cs* required for the updater function to be well-typed will
 be emitted by the constraint solver for subsequent solving.  The updater
@@ -340,8 +356,10 @@ constraint.
 In general, the constraint solving behaviour for ``SetField`` is slightly more
 complex than ``HasField``, because of the possibility of type-changing updates.
 However, when the original and updated record types are the same (e.g. the
-``SetField'`` constraint synonym is used), a constraint ``SetField x r r a``
+``SetField'`` constraint synonym is used), a constraint ``SetField x r r a a``
 will be solved automatically iff ``HasField x r a`` is solved automatically.
+
+TODO: need to verify the above assertion.
 
 Assuming `proposal #515
 <https://github.com/ghc-proposals/ghc-proposals/pull/515>`_ is accepted,
@@ -354,33 +372,34 @@ with ``HasField``.)
 
 Type improvement for ``SetField``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-The only true functional dependency on ``SetField`` is ``x t -> b``, i.e. the
-result record type determines the field type it contains.
+The only true functional dependencies on ``SetField`` are ``x s -> a``, ``x t -> b``, i.e. the
+(source or target) record type determines the field type it contains.
 
 However, in certain cases ``SetField`` is treated as if it additionally had
-functional dependencies ``x s -> t`` and ``x t -> b``.  Specifically, these
+functional dependencies ``x s -> t`` and ``x t -> s``.  Specifically, these
 dependencies are treated as if they existed for:
 
 * The ambiguity check: for example, a type ``SetField "foo" s t a b => t`` is
   not considered ambiguous.
 
 * The instance consistency check: for example, the user may not simultaneously
-  define instances ``SetField "foo" T Int Int`` and ``SetField "foo" T Char Char``.
+  define instances ``SetField "foo" T T Int Int`` and ``SetField "foo" T T Char Char``.
 
 * Improvements arising from instance declarations: for example, if there is a
-  user-defined instance ``SetField "foo" T T Int`` then a wanted constraint
-  ``SetField "foo" T alpha beta`` will be solved using the dependency ``x s ->
-  t`` to improve ``alpha := T`` followed by using the dependency ``x t -> b``
-  to improve ``beta := Int`` at which point the instance applies.
+  user-defined instance ``SetField "foo" T T Int Int`` then a wanted constraint
+  ``SetField "foo" T alpha beta gamma`` will be solved using the dependency ``x s ->
+  t`` to improve ``alpha := T`` followed by using the dependency ``x s -> a``
+  to improve ``beta := Int`` and ``x t -> b``
+  to improve ``gamma := Int`` at which point the instance applies.
 
 However, these dependencies are ignored for the purposes of:
 
 * Wanted-wanted constraint interactions: for example, given wanted constraints
-  ``SetField x s t b`` and ``SetField x s t' b`` GHC will not infer that ``t ~
+  ``SetField x s t a b`` and ``SetField x s t' a b`` GHC will not infer that ``t ~
   t'``.
 
 * The coverage condition: for example, the user may define an instance
-  ``SetField "foo" (T a) (T b) Int`` (e.g. if ``T`` has a phantom parameter).
+  ``SetField "foo" (T a) (T b) Int Int`` (e.g. if ``T`` has a phantom parameter).
 
 
 
@@ -493,20 +512,20 @@ s`` but "dysfunctional instances" were allowed to violate the coverage
 condition. Thus the following definitions would be permitted::
 
   data Tagged u w = Tagged { unTagged :: w }
-  instance {-# DYSFUNCTIONAL #-} SetField "unTagged" (Tagged u a) (Tagged v b) b
+  instance {-# DYSFUNCTIONAL #-} SetField "unTagged" (Tagged u a) (Tagged v b) a b
 
 Now consider the following set of wanted constraints::
 
   beta  ~ Tagged Int  ()
   gamma ~ Tagged Char ()
-  SetField "unTagged" alpha beta  ()
-  SetField "unTagged" alpha gamma ()
+  SetField "unTagged" alpha beta  () ()
+  SetField "unTagged" alpha gamma () ()
 
 The constraint solving strategy GHC uses is to simplify equality constraints
 first, giving::
 
-  SetField "unTagged" alpha (Tagged Int  ()) ()
-  SetField "unTagged" alpha (Tagged Char ()) ()
+  SetField "unTagged" alpha (Tagged Int  ()) () ()
+  SetField "unTagged" alpha (Tagged Char ()) () ()
 
 These can then be solved by improving ``alpha := Tagged delta epsilon`` using
 the functional dependency ``x t -> s``.
@@ -522,6 +541,8 @@ valid, and constraint solving should remain confluent.
 
 Dysfunctional dependencies break principal types
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TODO: update for extra parameter for ``SetField``
+
 For example: ::
 
   hmm v r = (setField @"foo" v r, setField @"foo" v r)
@@ -542,7 +563,7 @@ most general type is equivalent to the inferred type.  However, if
 
 Option: defaulting type-changing updates to be monomorphic
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-TODO: discuss option to default type-changing updates to be monomorphic
+TODO: discuss option to default type-changing updates to be monomorphic?
 
 
 Phantom parameters
