@@ -16,13 +16,19 @@ To get hyperlinks, use backticks, angle brackets, and an underscore `like this <
 Proposal title
 ==============
 
-.. author:: Your name
-.. date-accepted:: Leave blank. This will be filled in when the proposal is accepted.
-.. ticket-url:: Leave blank. This will eventually be filled with the
-                ticket URL which will track the progress of the
-                implementation of the feature.
-.. implemented:: Leave blank. This will be filled in with the first GHC version which
-                 implements the described feature.
+.. list-table::
+  :header-rows: 1
+  :widths: 25 25 25 25
+
+  * - Author
+    - Date accepted
+    - Ticket
+    - Implemented
+  * - Your name
+    - .. Leave blank. This will be filled in when the proposal is accepted.
+    - .. Leave blank. This will eventually be filled with the ticket URL which will track the progress of the implementation of the feature.
+    - .. Leave blank. This will be filled in with the first GHC version which implements the described feature.
+
 .. highlight:: haskell
 .. header:: This proposal is `discussed at this pull request <https://github.com/ghc-proposals/ghc-proposals/pull/0>`_.
             **After creating the pull request, edit this file again, update the
