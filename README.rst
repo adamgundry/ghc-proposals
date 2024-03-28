@@ -235,15 +235,17 @@ The current members, including their GitHub handle, when they joined first, when
 =============  =========================  ====================================================  =======  =======  =======  =========
 |simonmar|     Simon Marlow               `@simonmar <https://github.com/simonmar>`_            2017/02  2024/02  2027/02  co-chair
 |simonpj|      Simon Peyton-Jones         `@simonpj <https://github.com/simonpj>`_              2017/02  2024/02  2027/02  co-chair
-|gridaphobe|   Eric Seidel                `@gridaphobe <https://github.com/gridaphobe>`_        2018/09  2022/03  2025/03
-|cdornan|      Chris Dornan               `@cdornan <https://github.com/cdornan>`_              2022/03           2025/03
-|aspiwack|     Arnaud Spiwack             `@aspiwack <https://github.com/aspiwack/>`_           2019/07  2022/10  2025/10
-☺              Adam Gundry                `@adamgundry <https://github.com/adamgundry/>`_       2022/10           2025/10  secretary
-|angerman|     Moritz Angermann           `@angerman <https://github.com/angerman/>`_           2023/02           2026/02
-|maralorn|     Malte Ott                  `@maralorn <https://github.com/maralorn/>`_           2024/03           2027/03
-|Tritlo|       Matthías Páll Gissurarson  `@Tritlo <https://github.com/Tritlo>`_                2024/03           2027/03
+|gridaphobe|   Eric Seidel                `@gridaphobe <https://github.com/gridaphobe>`_        2018/09  2022/03  2025/03  member
+|cdornan|      Chris Dornan               `@cdornan <https://github.com/cdornan>`_              2022/03  -        2025/03  member
+|aspiwack|     Arnaud Spiwack             `@aspiwack <https://github.com/aspiwack/>`_           2019/07  2022/10  2025/10  member
+|adamgundry|   Adam Gundry                `@adamgundry <https://github.com/adamgundry/>`_       2022/10  -        2025/10  secretary
+|angerman|     Moritz Angermann           `@angerman <https://github.com/angerman/>`_           2023/02  -        2026/02  member
+|maralorn|     Malte Ott                  `@maralorn <https://github.com/maralorn/>`_           2024/03  -        2027/03  member
+|Tritlo|       Matthías Páll Gissurarson  `@Tritlo <https://github.com/Tritlo>`_                2024/03  -        2027/03  member
 =============  =========================  ====================================================  =======  =======  =======  =========
 
+
+.. |adamgundry| image:: https://github.com/adamgundry.png?size=24
 .. |aspiwack| image:: https://github.com/aspiwack.png?size=24
 .. |simonmar| image:: https://github.com/simonmar.png?size=24
 .. |simonpj| image:: https://github.com/simonpj.png?size=24
