@@ -29,7 +29,6 @@ Proposal title
     - .. Leave blank. This will eventually be filled with the ticket URL which will track the progress of the implementation of the feature.
     - .. Leave blank. This will be filled in with the first GHC version which implements the described feature.
 
-.. highlight:: haskell
 .. header:: This proposal is `discussed at this pull request <https://github.com/ghc-proposals/ghc-proposals/pull/0>`_.
             **After creating the pull request, edit this file again, update the
             number in the link, and delete this bold sentence.**
@@ -55,7 +54,7 @@ like "should" or "could". Strive for a complete definition. Your specification
 may include,
 
 * BNF grammar and semantics of any new syntactic constructs
-  (Use the `Haskell 2010 Report <https://www.haskell.org/onlinereport/haskell2010/>`_ or GHC's ``alex``\- or ``happy``\-formatted files
+  (Use the `Haskell 2010 Report <https://www.haskell.org/onlinereport/haskell2010/>`__ or GHC's ``alex``\- or ``happy``\-formatted files
   for the `lexer <https://gitlab.haskell.org/ghc/ghc/-/blob/master/compiler/GHC/Parser/Lexer.x>`_ or `parser <https://gitlab.haskell.org/ghc/ghc/-/blob/master/compiler/GHC/Parser.y>`_
   for a good starting point.)
 * the types and semantics of any new library interfaces
@@ -154,13 +153,13 @@ How well does your proposal meet the stability principles described in our
 Will your proposed change cause any existing programs to change behaviour or
 stop working? Assess the expected impact on existing code on the following scale:
 
-0. No breakage
-1. Breakage only in extremely rare cases (e.g. for specifically-constructed
+1. No breakage
+2. Breakage only in extremely rare cases (e.g. for specifically-constructed
    examples, but probably no packages published in the Hackage package repository)
-2. Breakage in rare cases (e.g. a few Hackage packages may break, but probably
+3. Breakage in rare cases (e.g. a few Hackage packages may break, but probably
    no packages included in recent Stackage package sets)
-3. Breakage in uncommon cases (e.g. a few Stackage packages may break)
-4. Breakage in common cases
+4. Breakage in uncommon cases (e.g. a few Stackage packages may break)
+5. Breakage in common cases
 
 (For the purposes of this assessment, GHC emitting new warnings is not
 considered to be a breaking change, i.e. packages are assumed not to use
